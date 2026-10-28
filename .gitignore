@@ -1,0 +1,12 @@
+repos/
+build/
+**/build/
+__pycache__/
+*.uf2
+*.elf
+.DS_Store
+host/console.log
+host/nio-run.log
+palm/docker/build.log
+firmware/build-configure.log
+rom/
