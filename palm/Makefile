@@ -23,9 +23,9 @@ $(B)/Palm-MakeROM: $(wildcard $(MAKEROM_SRC)/*.cpp $(MAKEROM_SRC)/*.h)
 $(NIOLIB): FORCE
 	$(MAKE) -C nio-lib
 
-$(B)/sbnio/sbnio: sbnio/sbnio.c sbnio/sbnio_rsc.h ../include/sbnio.h
+$(B)/sbnio/sbnio: sbnio/sbnio.c sbnio/sbnio_rsc.h common/sbn_client.c common/sbn_client.h ../include/sbnio.h
 	mkdir -p $(@D)
-	$(CC) $(CFLAGS) -o $@ sbnio/sbnio.c
+	$(CC) $(CFLAGS) -o $@ sbnio/sbnio.c common/sbn_client.c
 
 $(B)/nionet/nionet: nionet/nionet.c nionet/nionet_rsc.h $(NIOLIB)
 	mkdir -p $(@D)
@@ -63,7 +63,7 @@ $(foreach a,sbnio nionet,$(eval $(call app,$(a))))
 $(B)/sbnio.rom: $(patsubst %,$(B)/%.prc,$(APPS)) $(B)/Palm-MakeROM
 	$(B)/Palm-MakeROM -op create -hdr 0x08000000 -romBlock 0x08000000 0x10000 \
 	  -chChecksum -chName "Springboard NIO" -chManuf "FujiNet" -chVersion 0x0100 \
-	  -chZCrDate -romName "SBNIO 0.2" -autoSize -tokStr HsAT 330 \
+	  -chZCrDate -romName "SBNIO 0.3" -autoSize -tokStr HsAT 330 \
 	  $(patsubst %,-romDB $(B)/%.prc,$(APPS)) -o $@
 
 clean:

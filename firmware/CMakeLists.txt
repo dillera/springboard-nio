@@ -23,7 +23,7 @@ add_custom_command(
 add_executable(sbnio
     src/main.c
     src/bus.c
-    src/mailbox.c
+    src/link.c
     src/console.c
     src/usb_descriptors.c
     src/pio_rearm_program.c

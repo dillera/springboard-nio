@@ -1,7 +1,8 @@
-#include "mailbox.h"
+#include "link.h"
 #include "bus.h"
 #include "console.h"
 #include "sbnio.h"
+#include "hardware/clocks.h"
 #include "hardware/gpio.h"
 #include "hardware/structs/pads_bank0.h"
 #include "hardware/structs/powman.h"
@@ -22,7 +23,9 @@
 #define SLIP_ESC_ESC 0xDD
 
 static uint8_t req[SBN_REQ_MAX];
-static uint32_t req_len;
+static uint32_t req_len, req_expect;
+static uint16_t req_check, req_palm_check;
+static bool req_overflow, req_have_check;
 static uint8_t tx[2 * SBN_REQ_MAX + 2];
 static uint32_t tx_len, tx_pos;
 static uint8_t rx[SBN_RESP_MAX + 1];
@@ -32,13 +35,13 @@ static bool awaiting, loopback, trace, host;
 static uint8_t seq_now, dev_now, cmd_now;
 static absolute_time_t deadline;
 static uint64_t sent_at;
-static uint32_t token_tail, token_peak;
-static uint32_t tokens, overflowed, unknown, frames_dropped;
+static uint32_t write_tail, write_peak;
+static uint32_t writes, unknown, frames_dropped;
+static uint32_t we_count, we_min = UINT32_MAX, we_max, we_last;
 static char palm_log[96];
 static unsigned palm_log_used;
 
-/* The mailbox lives in the CS0 table above the ROM, at its own byte offsets. */
-static void reg(uint16_t offset, uint16_t value) { bus_rom_words[offset / 2] = value; }
+static void reg(uint16_t offset, uint16_t value) { bus_cs1_words[offset / 2] = value; }
 
 static void publish_status(void) {
     uint16_t st = 0;
@@ -50,18 +53,21 @@ static void publish_status(void) {
 
 static const char *result_name(uint16_t r) {
     static const char *const names[] = {"ok", "no-host", "timeout", "bad-length",
-                                        "?", "too-big", "aborted"};
+                                        "bad-check", "too-big", "aborted"};
     return r < sizeof names / sizeof names[0] ? names[r] : "?";
 }
 
-/* Data first, then length and result, then the sequence the Palm polls. */
+/* Data first, then length, result and check, then the sequence the Palm polls. */
 static void publish_reply(uint8_t seq, uint16_t result, const uint8_t *data, uint32_t len) {
+    uint16_t check = 0;
     for (uint32_t i = 0; i < len; i += 2) {
         uint16_t w = (uint16_t)(data[i] << 8 | (i + 1 < len ? data[i + 1] : 0));
-        bus_rom_words[SBN_R_RESP / 2 + i / 2] = w;
+        bus_cs1_words[SBN_R_RESP / 2 + i / 2] = w;
+        check = SBN_CHECK_STEP(check, w);
     }
     reg(SBN_R_RESP_LEN, (uint16_t)len);
     reg(SBN_R_RESULT, result);
+    reg(SBN_R_RESP_CHECK, check);
     __dmb();
     reg(SBN_R_RESP_SEQ, seq);
     awaiting = false;
@@ -82,7 +88,8 @@ static void slip_queue(const uint8_t *data, uint32_t len) {
     tx[tx_len++] = SLIP_END;
 }
 
-static void doorbell(uint8_t seq) {
+/* Send req to NIO, or answer with the verdict if the request was bad. */
+static void doorbell(uint8_t seq, uint16_t verdict) {
     reg(SBN_R_ACK_SEQ, seq);
     sent_at = time_us_64();
     uint32_t len = req_len;
@@ -90,10 +97,7 @@ static void doorbell(uint8_t seq) {
     awaiting = false;
     console_printf("#%u request %lu bytes\n", seq, (unsigned long)len);
     if (len) console_hex("  >", req, len < 64 ? len : 64);
-    if (!len || overflowed) {
-        overflowed = 0;
-        return publish_reply(seq, SBN_RES_BAD_LEN, NULL, 0);
-    }
+    if (verdict != SBN_RES_OK) return publish_reply(seq, verdict, NULL, 0);
     if (loopback) return publish_reply(seq, SBN_RES_OK, req, len);
     if (!host) return publish_reply(seq, SBN_RES_NO_HOST, NULL, 0);
     slip_queue(req, len);
@@ -116,7 +120,7 @@ static void palm_log_char(uint8_t c) {
     if (c != '\n') palm_log[palm_log_used++] = (char)c;
 }
 
-static void control(uint8_t value) {
+static void control(uint16_t value) {
     switch (value) {
     case SBN_CTL_ABORT:
         if (awaiting) publish_reply(seq_now, SBN_RES_ABORTED, NULL, 0);
@@ -129,34 +133,75 @@ static void control(uint8_t value) {
     publish_status();
 }
 
-static void handle_token(uint32_t snapshot) {
-    uint32_t offset = BUS_TOKEN_OFFSET(snapshot);
-    uint8_t type = (uint8_t)(offset >> 9 & 7), byte = (uint8_t)(offset >> 1);
-    ++tokens;
-    if (trace) console_printf("token %u %02x (%08lx)\n", type, byte, (unsigned long)snapshot);
-    switch (type) {
-    case SBN_TK_BEGIN: req_len = 0; overflowed = 0; break;
-    case SBN_TK_BYTE:
-        if (req_len < SBN_REQ_MAX) req[req_len++] = byte;
-        else overflowed = 1;
+/* The request words must match what BEGIN and CHECK announced. */
+static uint16_t request_verdict(void) {
+    uint32_t want = (req_expect + 1) & ~1u;
+    if (!req_expect || req_expect > SBN_REQ_MAX || req_overflow || req_len != want)
+        return SBN_RES_BAD_LEN;
+    if (!req_have_check || req_check != req_palm_check) {
+        console_printf("request check: palm %04x%s, firmware %04x\n", req_palm_check,
+                       req_have_check ? "" : " (not sent)", req_check);
+        return SBN_RES_BAD_CHECK;
+    }
+    req_len = req_expect;
+    return SBN_RES_OK;
+}
+
+static void handle_write(uint32_t snapshot) {
+    uint8_t r = BUS_WRITE_REG(snapshot);
+    uint16_t data = BUS_WRITE_DATA(snapshot);
+    ++writes;
+    if (trace) console_printf("write %u %04x (%08lx)\n", r, data, (unsigned long)snapshot);
+    switch (r) {
+    case SBN_W_BEGIN:
+        req_len = 0;
+        req_expect = data;
+        req_check = 0;
+        req_overflow = req_have_check = false;
         break;
-    case SBN_TK_DOORBELL: doorbell(byte); break;
-    case SBN_TK_CONTROL: control(byte); break;
-    case SBN_TK_LOG: palm_log_char(byte); break;
-    case SBN_TK_ECHO: reg(SBN_R_ECHO, byte); break;
+    case SBN_W_DATA:
+        if (req_len + 2 <= SBN_REQ_MAX) {
+            req[req_len++] = (uint8_t)(data >> 8);
+            req[req_len++] = (uint8_t)data;
+        } else req_overflow = true;
+        req_check = SBN_CHECK_STEP(req_check, data);
+        break;
+    case SBN_W_CHECK:
+        req_palm_check = data;
+        req_have_check = true;
+        break;
+    case SBN_W_DOORBELL: doorbell((uint8_t)data, request_verdict()); break;
+    case SBN_W_CONTROL: control(data); break;
+    case SBN_W_LOG:
+        if (data >> 8) palm_log_char((uint8_t)(data >> 8));
+        if (data & 0xff) palm_log_char((uint8_t)data);
+        break;
+    case SBN_W_ECHO: reg(SBN_R_ECHO, data); break;
     default: ++unknown; break;
     }
-    reg(SBN_R_TOKENS, (uint16_t)tokens);
+}
+
+static void drain_writes(void) {
+    uint32_t head = bus_write_head();
+    uint32_t fill = (head - write_tail) % BUS_WRITE_RING_WORDS;
+    if (fill > write_peak) write_peak = fill;
+    if (!fill) return;
+    while (write_tail != head) {
+        handle_write(bus_write_ring[write_tail]);
+        write_tail = (write_tail + 1) % BUS_WRITE_RING_WORDS;
+    }
+    /* Once per batch, to keep Core0 off the table Core1 is serving. */
+    reg(SBN_R_WRITES, (uint16_t)writes);
     reg(SBN_R_REQ_BYTES, (uint16_t)req_len);
 }
 
-static void drain_tokens(void) {
-    uint32_t head = bus_token_head();
-    uint32_t fill = (head - token_tail) % BUS_TOKEN_RING_WORDS;
-    if (fill > token_peak) token_peak = fill;
-    while (token_tail != head) {
-        handle_token(bus_token_ring[token_tail]);
-        token_tail = (token_tail + 1) % BUS_TOKEN_RING_WORDS;
+static void drain_widths(void) {
+    uint32_t ns;
+    while (bus_pop_we_width(&ns)) {
+        ++we_count;
+        we_last = ns;
+        if (ns < we_min) we_min = ns;
+        if (ns > we_max) we_max = ns;
     }
 }
 
@@ -211,16 +256,17 @@ static void pump_usb(void) {
     if (awaiting && time_reached(deadline)) publish_reply(seq_now, SBN_RES_TIMEOUT, NULL, 0);
 }
 
-void mailbox_init(void) {
-    for (uint32_t i = SBN_REGS / 2; i < BUS_TABLE_WORDS; ++i) bus_rom_words[i] = 0;
+void link_init(void) {
+    for (uint32_t i = 0; i < BUS_TABLE_WORDS; ++i) bus_cs1_words[i] = 0;
     reg(SBN_R_MAGIC, SBN_MAGIC_VALUE);
     reg(SBN_R_VERSION, SBN_ABI_VERSION);
     publish_status();
 }
 
-void mailbox_poll(void) {
+void link_poll(void) {
     static uint32_t last_ms;
-    drain_tokens();
+    drain_writes();
+    drain_widths();
     pump_usb();
     /* Once a millisecond: Core0 stays off the table while Core1 reads it. */
     uint32_t ms = to_ms_since_boot(get_absolute_time());
@@ -230,10 +276,10 @@ void mailbox_poll(void) {
     }
 }
 
-uint32_t mailbox_chip_reset;
+uint32_t link_chip_reset;
 
 static const char *reset_reason(void) {
-    uint32_t r = mailbox_chip_reset;
+    uint32_t r = link_chip_reset;
     if (r & POWMAN_CHIP_RESET_HAD_BOR_BITS) return "brown-out";
     if (r & POWMAN_CHIP_RESET_HAD_POR_BITS) return "power-on";
     if (r & POWMAN_CHIP_RESET_HAD_RUN_LOW_BITS) return "RUN pin";
@@ -243,6 +289,17 @@ static const char *reset_reason(void) {
         return "watchdog/reboot";
     if (r & POWMAN_CHIP_RESET_HAD_DP_RESET_REQ_BITS) return "debugger";
     return "unknown";
+}
+
+static void print_widths(void) {
+    if (!we_count) return console_printf("WE low: no CS1 writes measured\n");
+    console_printf("WE low ns: %lu writes, min %lu max %lu last %lu\n", (unsigned long)we_count,
+                   (unsigned long)we_min, (unsigned long)we_max, (unsigned long)we_last);
+}
+
+static void print_settle(void) {
+    unsigned mhz = clock_get_hz(clk_sys) / 1000000u, cycles = bus_write_settle();
+    console_printf("write settle %u cycles, %u ns at %u MHz\n", cycles, cycles * 1000u / mhz, mhz);
 }
 
 static void status(void) {
@@ -257,9 +314,11 @@ static void status(void) {
     console_printf("bus %s, CS0 cycles %lu, CS1 cycles %lu (runs %lu, fault %lu)\n",
                    bus_is_active() ? "active" : "stopped", (unsigned long)cs0,
                    (unsigned long)cs1, (unsigned long)t.runs, (unsigned long)t.fault);
-    console_printf("tokens %lu unknown %lu ring-peak %lu, request %lu bytes\n",
-                   (unsigned long)tokens, (unsigned long)unknown, (unsigned long)token_peak,
+    console_printf("writes %lu unknown %lu ring-peak %lu, request %lu bytes\n",
+                   (unsigned long)writes, (unsigned long)unknown, (unsigned long)write_peak,
                    (unsigned long)req_len);
+    print_widths();
+    print_settle();
     console_printf("nio %s, %s, loopback %s, dropped frames %lu\n", host ? "open" : "closed",
                    awaiting ? "waiting" : "idle", loopback ? "on" : "off",
                    (unsigned long)frames_dropped);
@@ -357,10 +416,24 @@ static void send_hex(const char *hex) {
         while (*hex == ' ') ++hex;
     }
     req_len = n;
-    doorbell(0);
+    doorbell(0, n ? SBN_RES_OK : SBN_RES_BAD_LEN);
 }
 
-void mailbox_command(const char *line) {
+static void settle(const char *arg) {
+    char *end;
+    long v = strtol(arg, &end, 10);
+    if (end == arg || *end || v < 0 || v > 31) console_printf("settle <0-31>\n");
+    else bus_set_write_settle((unsigned)v);
+    print_settle();
+}
+
+static void widths(void) {
+    print_widths();
+    we_count = we_max = we_last = 0;
+    we_min = UINT32_MAX;
+}
+
+void link_command(const char *line) {
     if (!strcmp(line, "status")) status();
     else if (!strcmp(line, "pins")) pins();
     else if (!strcmp(line, "watch")) watch();
@@ -368,9 +441,12 @@ void mailbox_command(const char *line) {
     else if (!strcmp(line, "float")) float_test();
     else if (!strncmp(line, "send ", 5)) send_hex(line + 5);
     else if (!strcmp(line, "regs")) {
-        for (unsigned r = SBN_R_MAGIC; r <= SBN_R_TICKS; r += 2)
-            console_printf("%04x: %04x\n", r, bus_rom_words[r / 2]);
-    } else if (!strcmp(line, "trace on")) trace = true;
+        for (unsigned r = SBN_R_MAGIC; r <= SBN_R_LAST; r += 2)
+            console_printf("%04x: %04x\n", r, bus_cs1_words[r / 2]);
+    } else if (!strcmp(line, "settle")) print_settle();
+    else if (!strncmp(line, "settle ", 7)) settle(line + 7);
+    else if (!strcmp(line, "widths")) widths();
+    else if (!strcmp(line, "trace on")) trace = true;
     else if (!strcmp(line, "trace off")) trace = false;
     else if (!strcmp(line, "loopback on")) { loopback = true; publish_status(); }
     else if (!strcmp(line, "loopback off")) { loopback = false; publish_status(); }
@@ -378,5 +454,5 @@ void mailbox_command(const char *line) {
     else if (!strcmp(line, "arm")) bus_rearm();
     else if (!strcmp(line, "bootsel")) reset_usb_boot(0, 0);
     else console_printf("commands: status pins watch scan [ms] float regs send <hex> "
-                        "trace on|off loopback on|off stop arm bootsel\n");
+                        "trace on|off loopback on|off settle [0-31] widths stop arm bootsel\n");
 }

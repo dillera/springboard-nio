@@ -1,12 +1,13 @@
-/* SB NIO: exercise the springboard-nio mailbox and talk to fujinet-nio.
+/* SB NIO: exercise the springboard-nio CS1 link and talk to fujinet-nio.
  *
- * Everything goes through the module's CS0 window, found with Handspring's
- * card attributes (CsBase), never a fixed address. Registers are read with
- * 16-bit MOVE.W; bytes are sent by reading token addresses. See
- * include/sbnio.h. Each line shown is also sent to the RP2350 console. */
+ * sbn_client finds the module with Handspring's card attributes (CsBase,
+ * CsSize), never a fixed address; the link is plain 16-bit MOVE.W reads and
+ * writes on CS1. See include/sbnio.h. Each line shown is also sent to the
+ * RP2350 console. */
 #include <PalmOS.h>
 #include "sbnio_rsc.h"
 #include "sbnio.h"
+#include "sbn_client.h"
 
 /* Handspring extension calls through the HsSelector trap (HsExt.h). */
 Err HsCardAttrGet(UInt16 cardNo, UInt16 attr, void *valueP)
@@ -16,8 +17,7 @@ Err HsCardAttrSet(UInt16 cardNo, UInt16 attr, void *valueP)
 MemPtr *HsCardCatchListP(void)
     __attribute__((__callseq__("move.w #9,-(%%sp); trap #15; dc.w 0xA349")));
 
-enum { hsAttrRemovable = 0, hsAttrHwInstalled = 1, hsAttrCsBase = 3,
-       hsAttrCsSize = 4, hsAttrAccessTime = 5 };
+enum { hsAttrAccessTime = 5 };
 
 /* Bus access time to ask for: slower than the ROM's 330 ns gives the RP2350
  * more time to answer each read. CS0 and CS1 share it. */
@@ -25,22 +25,18 @@ enum { hsAttrRemovable = 0, hsAttrHwInstalled = 1, hsAttrCsBase = 3,
 #define LINES 11
 #define LINE_CHARS 40
 #define UNIX_TO_PALM 2082844800UL
+#define ECHO_WORDS 512
+#define ECHO_MAX_BAD 32
+#define BUF_MAX 4096
+#define LOOP_FIXED 9
+#define LOOP_RANDOM 8
+#define WAIT_MS 50
 
 static char gLines[LINES][LINE_CHARS];
 static UInt16 gLineCount;
-static UInt32 gBase;
-static UInt8 gSeq;
-static UInt8 gReq[300], gResp[300];
-
-static UInt16 gSink;
-
-static UInt16 rd(UInt16 off) { return *(volatile UInt16 *)(gBase + off); }
-
-/* Send one byte by reading the token address that encodes it. */
-static void token(UInt16 type, UInt8 byte)
-{
-    gSink = *(volatile UInt16 *)(gBase + (UInt32)SBN_TOKEN(type, byte));
-}
+static UInt32 gNs, gRnd = 1;
+static void (*gTask)(void);
+static UInt8 gReq[BUF_MAX], gResp[BUF_MAX];
 
 static void draw(void)
 {
@@ -56,15 +52,11 @@ static void draw(void)
 
 static void say(const char *s)
 {
-    const char *p;
     StrNCopy(gLines[gLineCount % LINES], s, LINE_CHARS - 1);
     gLines[gLineCount % LINES][LINE_CHARS - 1] = 0;
     gLineCount++;
     draw();
-    if (gBase) {
-        for (p = s; *p; p++) token(SBN_TK_LOG, (UInt8)*p);
-        token(SBN_TK_LOG, '\n');
-    }
+    sbn_log(s);
 }
 
 static void two(char *out, UInt16 v)
@@ -74,30 +66,37 @@ static void two(char *out, UInt16 v)
     out[2] = 0;
 }
 
-static Boolean find_module(void)
+/* Pseudo-random test data; the state carries on so each press differs. */
+static UInt16 rnd(void)
 {
-    UInt16 card;
-    UInt8 removable, installed;
-    UInt32 base, size, ns;
-    char buf[48];
+    gRnd = gRnd * 1664525UL + 1013904223UL;
+    return (UInt16)(gRnd >> 16);
+}
 
-    for (card = 1; card < 4; card++) {
-        removable = installed = 0;
-        if (HsCardAttrGet(card, hsAttrRemovable, &removable) ||
-            HsCardAttrGet(card, hsAttrHwInstalled, &installed) || !removable || !installed)
-            continue;
-        if (HsCardAttrGet(card, hsAttrCsBase, &base) || HsCardAttrGet(card, hsAttrCsSize, &size))
-            continue;
-        ns = ACCESS_NS;
-        HsCardAttrSet(card, hsAttrAccessTime, &ns);
-        if (HsCardAttrGet(card, hsAttrAccessTime, &ns)) ns = 0;
-        gBase = base;
-        StrPrintF(buf, "card %u CS0 %lx size %lx %lu ns", card, base, size, ns);
-        say(buf);
-        return true;
+static const char *res_name(UInt16 r)
+{
+    switch (r) {
+    case SBN_RES_OK: return "ok";
+    case SBN_RES_NO_HOST: return "no host";
+    case SBN_RES_TIMEOUT: return "timeout";
+    case SBN_RES_BAD_LEN: return "bad len";
+    case SBN_RES_BAD_CHECK: return "bad check";
+    case SBN_RES_TOO_BIG: return "too big";
+    case SBN_RES_ABORTED: return "aborted";
+    case SBN_NO_ANSWER: return "no answer";
+    case SBN_BAD_READ: return "bad read";
     }
-    say("No Springboard module found");
-    return false;
+    return "?";
+}
+
+/* A register read right after a write may not have caught up yet, so poll. */
+static Boolean wait_reg(UInt16 off, UInt16 mask, UInt16 want)
+{
+    UInt32 start = TimGetTicks(), limit = WAIT_MS * (UInt32)SysTicksPerSecond() / 1000;
+
+    while ((sbn_read(off) & mask) != want)
+        if (TimGetTicks() - start > limit) return false;
+    return true;
 }
 
 /* Run fn with Handspring's removal handler armed, so pulling the module
@@ -121,32 +120,6 @@ static Err guarded(void (*fn)(void))
         err = frame.err ? frame.err : 1;
     *list = (MemPtr)frame.nextP;
     return err;
-}
-
-/* One request/reply through the mailbox. Returns the SBN_RES_* result, or
- * 0xFFFF if the firmware never answered the doorbell. */
-static UInt16 exchange(const UInt8 *req, UInt16 len, UInt16 *replyLen)
-{
-    UInt16 i, n, w, result;
-    UInt32 start;
-
-    if (++gSeq == 0) gSeq = 1;
-    token(SBN_TK_BEGIN, 0);
-    for (i = 0; i < len; i++) token(SBN_TK_BYTE, req[i]);
-    token(SBN_TK_DOORBELL, gSeq);
-    start = TimGetTicks();
-    while (rd(SBN_R_RESP_SEQ) != gSeq)
-        if (TimGetTicks() - start > 12 * SysTicksPerSecond()) return 0xFFFF;
-    result = rd(SBN_R_RESULT);
-    n = rd(SBN_R_RESP_LEN);
-    if (n > sizeof gResp) n = sizeof gResp;
-    for (i = 0; i < n; i += 2) {
-        w = rd(SBN_R_RESP + i);
-        gResp[i] = (UInt8)(w >> 8);
-        if (i + 1 < n) gResp[i + 1] = (UInt8)w;
-    }
-    *replyLen = n;
-    return result;
 }
 
 /* FujiBus: device, command, u16 LE length, checksum, descriptors... */
@@ -180,57 +153,140 @@ static UInt8 fb_reply(UInt16 n, UInt8 device, UInt8 command, const UInt8 **paylo
 
 static void probe(void)
 {
-    UInt16 magic = rd(SBN_R_MAGIC), version = rd(SBN_R_VERSION), status = rd(SBN_R_STATUS);
-    UInt16 t1 = rd(SBN_R_TICKS), t2;
+    UInt16 t1, t2;
     char buf[48];
 
+    StrPrintF(buf, "card %u CS0 %lx", sbn_card(), sbn_cs0());
+    say(buf);
+    StrPrintF(buf, "CS1 %lx size %lx", sbn_base(), sbn_base() - sbn_cs0());
+    say(buf);
+    StrPrintF(buf, "access time %lu ns", gNs);
+    say(buf);
+    StrPrintF(buf, "magic %x ver %x status %x", sbn_read(SBN_R_MAGIC), sbn_read(SBN_R_VERSION),
+              sbn_read(SBN_R_STATUS));
+    say(buf);
+    StrPrintF(buf, "writes %x", sbn_read(SBN_R_WRITES));
+    say(buf);
+    t1 = sbn_read(SBN_R_TICKS);
     SysTaskDelay(SysTicksPerSecond() / 10);
-    t2 = rd(SBN_R_TICKS);
-    StrPrintF(buf, "id %x abi %x status %x", magic, version, status);
+    t2 = sbn_read(SBN_R_TICKS);
+    StrPrintF(buf, "ticks %x>%x %s", t1, t2, t1 != t2 ? "(live)" : "(STUCK)");
     say(buf);
-    StrPrintF(buf, "clock %u -> %u %s", t1, t2, t1 != t2 ? "(live)" : "(STUCK)");
-    say(buf);
-    /* Carry on from the firmware's last reply so a stale one never matches. */
-    gSeq = (UInt8)rd(SBN_R_RESP_SEQ);
 }
 
+/* All 1s then all 0s (a reset leaves ECHO at 0, which would pass unchecked),
+ * each bit walking through 0s and through 1s, then pseudo-random words. */
+static UInt16 echo_value(UInt16 n)
+{
+    if (n == 0) return 0xFFFF;
+    if (n == 1) return 0x0000;
+    if (n < 18) return (UInt16)(1U << (n - 2));
+    if (n < 34) return (UInt16)~(1U << (n - 18));
+    return rnd();
+}
+
+/* Does every write the Palm makes to CS1 arrive with all 16 bits intact? */
 static void echo(void)
 {
-    UInt16 i, k, bad = 0, before = rd(SBN_R_TOKENS);
-    UInt8 v;
+    UInt16 i, v, bad = 0, badAt = 0, badWrote = 0, badRead = 0, before = sbn_read(SBN_R_WRITES);
+    UInt32 t0 = TimGetTicks(), ms;
     char buf[48];
 
-    for (i = 0; i < 256; i++) {
-        v = (UInt8)(i * 37 + 11);
-        token(SBN_TK_ECHO, v);
-        for (k = 0; k < 2000 && rd(SBN_R_ECHO) != v; k++)
-            ;
-        if (k == 2000) bad++;
+    for (i = 0; i < ECHO_WORDS && bad < ECHO_MAX_BAD; i++) {
+        v = echo_value(i);
+        sbn_write(SBN_W_ECHO, v);
+        if (wait_reg(SBN_R_ECHO, 0xFFFF, v)) continue;
+        if (!bad++) {
+            badAt = i;
+            badWrote = v;
+            badRead = sbn_read(SBN_R_ECHO);
+        }
     }
-    StrPrintF(buf, "echo 256: %u wrong, tokens +%u", bad, (UInt16)(rd(SBN_R_TOKENS) - before));
+    ms = (TimGetTicks() - t0) * 1000 / SysTicksPerSecond();
+    /* Count before logging: say() itself writes to CS1. */
+    wait_reg(SBN_R_WRITES, 0xFFFF, (UInt16)(before + i));
+    v = sbn_read(SBN_R_WRITES) - before;
+    StrPrintF(buf, "echo %u/%u ok in %lu ms", i - bad, i, ms);
+    say(buf);
+    if (bad) {
+        StrPrintF(buf, "bad #%u wrote %x read %x", badAt, badWrote, badRead);
+        say(buf);
+    }
+    if (v == i)
+        StrPrintF(buf, "writes +%u ok", v);
+    else
+        StrPrintF(buf, "writes +%u, expected %u", v, i);
     say(buf);
 }
 
+static Boolean loopback(Boolean on)
+{
+    sbn_write(SBN_W_CONTROL, on ? SBN_CTL_LOOPBACK_ON : SBN_CTL_LOOPBACK_OFF);
+    return wait_reg(SBN_R_STATUS, SBN_ST_LOOPBACK, on ? SBN_ST_LOOPBACK : 0);
+}
+
+static void fill(UInt8 *p, UInt16 n)
+{
+    UInt16 w;
+
+    for (; n > 1; n -= 2, p += 2) {
+        w = rnd();
+        p[0] = (UInt8)(w >> 8);
+        p[1] = (UInt8)w;
+    }
+    if (n) *p = (UInt8)(rnd() >> 8);
+}
+
+/* Round trips with the firmware echoing each request back (no NIO), so the
+ * link itself is what is tested, in both directions, at many lengths. */
 static void loop(void)
 {
-    UInt16 n, i, len, got, ok = 0, bad = 0, result = 0;
-    UInt32 t0 = TimGetTicks(), bytes = 0;
+    static const UInt16 lens[LOOP_FIXED] = { 1, 2, 3, 255, 256, 511, 1024, 4095, 4096 };
+    UInt16 n, i, len, got, result = SBN_RES_OK, ok = 0, badLen = 0, badResult = 0, badGot = 0, badAt = 0;
+    UInt32 t, ticks = 0, bytes = 0, ms;
     char buf[48];
 
-    token(SBN_TK_CONTROL, SBN_CTL_LOOPBACK_ON);
-    for (n = 0; n < 40; n++) {
-        len = (UInt16)(1 + (n * 37) % sizeof gReq);
-        for (i = 0; i < len; i++) gReq[i] = (UInt8)(n * 7 + i * 13);
-        result = exchange(gReq, len, &got);
-        if (result == SBN_RES_OK && got == len && MemCmp(gReq, gResp, len) == 0) ok++;
-        else bad++;
-        bytes += len;
+    if (!loopback(true)) {
+        say("loopback did not turn on");
+        loopback(false);
+        return;
     }
-    token(SBN_TK_CONTROL, SBN_CTL_LOOPBACK_OFF);
-    StrPrintF(buf, "loop %u ok %u bad (last %u)", ok, bad, result);
+    /* Stop at the first unanswered request: each one waits 35 s. */
+    for (n = 0; n < LOOP_FIXED + LOOP_RANDOM && result != SBN_NO_ANSWER; n++) {
+        len = n < LOOP_FIXED ? lens[n] : (UInt16)(1 + (rnd() & (BUF_MAX - 1)));
+        fill(gReq, len);
+        /* Time only the exchanges, not filling the request. */
+        t = TimGetTicks();
+        result = sbn_exchange(gReq, len, gResp, BUF_MAX, &got);
+        ticks += TimGetTicks() - t;
+        bytes += len;
+        if (result == SBN_RES_OK && got == len && MemCmp(gReq, gResp, len) == 0) {
+            ok++;
+            continue;
+        }
+        if (!badLen) {
+            for (i = 0; i < len && i < got && gReq[i] == gResp[i]; i++)
+                ;
+            badLen = len;
+            badResult = result;
+            badGot = got;
+            badAt = i;
+        }
+    }
+    if (!loopback(false)) say("loopback stuck on");
+    ms = ticks * 1000 / SysTicksPerSecond();
+    if (!ms) ms = 1;
+    StrPrintF(buf, "loop %u/%u ok", ok, n);
     say(buf);
-    StrPrintF(buf, "%lu bytes each way, %lu ms", bytes,
-              (TimGetTicks() - t0) * 1000 / SysTicksPerSecond());
+    if (badLen) {
+        StrPrintF(buf, "bad len %u: %s, got %u", badLen, res_name(badResult), badGot);
+        say(buf);
+        StrPrintF(buf, "first difference at byte %u", badAt);
+        say(buf);
+    }
+    StrPrintF(buf, "%lu bytes each way, %lu ms", bytes, ms);
+    say(buf);
+    StrPrintF(buf, "%lu bytes/s each way", bytes * 1000 / ms);
     say(buf);
 }
 
@@ -243,9 +299,9 @@ static void nio_time(void)
     DateTimeType dt;
     char buf[48], a[3], b[3], c[3], d[3], e[3];
 
-    result = exchange(gReq, fb_request(gReq, 0x45, 0x01), &got);
+    result = sbn_exchange(gReq, fb_request(gReq, 0x45, 0x01), gResp, BUF_MAX, &got);
     if (result != SBN_RES_OK) {
-        StrPrintF(buf, "GetTime: link result %u", result);
+        StrPrintF(buf, "GetTime: link %s", res_name(result));
         say(buf);
         return;
     }
@@ -261,7 +317,7 @@ static void nio_time(void)
     StrPrintF(buf, "NIO time %u-%s-%s %s:%s:%s UTC", dt.year, a, b, c, d, e);
     say(buf);
 
-    result = exchange(gReq, fb_request(gReq, 0x45, 0x04), &got);
+    result = sbn_exchange(gReq, fb_request(gReq, 0x45, 0x04), gResp, BUF_MAX, &got);
     status = result == SBN_RES_OK ? fb_reply(got, 0x45, 0x04, &p, &len) : 0xFF;
     if (!status && len >= 2 && p[1] < 30 && 2 + p[1] <= len) {
         StrCopy(buf, "NIO timezone ");
@@ -271,17 +327,34 @@ static void nio_time(void)
     }
 }
 
+/* Open the module on first use (and ask for the slower bus access time),
+ * then run the chosen test. */
+static void task(void)
+{
+    if (!sbn_base()) {
+        if (!sbn_open()) {
+            say("No Springboard module (ABI 4)");
+            return;
+        }
+        gNs = ACCESS_NS;
+        HsCardAttrSet(sbn_card(), hsAttrAccessTime, &gNs);
+        if (HsCardAttrGet(sbn_card(), hsAttrAccessTime, &gNs)) gNs = 0;
+    }
+    gTask();
+}
+
 static void run(void (*fn)(void))
 {
     char buf[40];
     Err err;
 
-    if (!gBase && !find_module()) return;
-    err = guarded(fn);
+    gTask = fn;
+    err = guarded(task);
     if (err) {
+        /* Forget the module first: say() would log to it. */
+        sbn_close();
         StrPrintF(buf, "Module removed (err %x)", err);
         say(buf);
-        gBase = 0;
     }
 }
 

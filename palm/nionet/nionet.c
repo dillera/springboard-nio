@@ -1,5 +1,5 @@
 /* NIO Net: real network requests from a Visor through fujinet-nio-lib, over
- * the Springboard mailbox to fujinet-nio on the host.
+ * the Springboard CS1 link to fujinet-nio on the host.
  *   HTTP / HTTPS  GET a page, show the status, size and first line
  *   ISS           NIO JSON translation: the station's position by JSON Pointer
  * Each line shown also goes to the RP2350 console. */

@@ -1,4 +1,4 @@
-# fujinet-nio-lib for Palm OS (prc-tools), with the springboard-nio mailbox
+# fujinet-nio-lib for Palm OS (prc-tools), with the springboard-nio CS1 link
 # as its transport. Run inside the sbnio-palm container.
 CC = m68k-palmos-gcc
 AR = m68k-palmos-ar
