@@ -49,7 +49,6 @@ PIO2 machine times WE low on every CS1 write (`status`, `widths`).
 | `docs/hardware/` | carrier pinout |
 | `repos/` | upstream checkouts (not tracked): mozzwald's `fujinet-nio` (`visor`), `fujinet-palm` (`visor`) and the private `handspring-visor-plan` |
 
-The planning repo `repos/handspring-visor-plan` is private; keep it local.
 
 ## Building and running
 
