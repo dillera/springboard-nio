@@ -1,6 +1,7 @@
 #include "link.h"
 #include "bus.h"
 #include "console.h"
+#include "packet_link.h"
 #include "sbnio.h"
 #include "hardware/clocks.h"
 #include "hardware/gpio.h"
@@ -16,27 +17,19 @@
 #include <string.h>
 
 #define NIO_ITF 0
-#define REPLY_TIMEOUT_MS 30000
-#define SLIP_END 0xC0
-#define SLIP_ESC 0xDB
-#define SLIP_ESC_END 0xDC
-#define SLIP_ESC_ESC 0xDD
 
 static uint8_t req[SBN_REQ_MAX];
 static uint32_t req_len, req_expect;
 static uint16_t req_check, req_palm_check;
 static bool req_overflow, req_have_check;
-static uint8_t tx[2 * SBN_REQ_MAX + 2];
-static uint32_t tx_len, tx_pos;
-static uint8_t rx[SBN_RESP_MAX + 1];
-static uint32_t rx_len;
-static bool rx_esc, rx_overflow;
+static uint8_t tx[PL_HEADER + SBN_REQ_MAX + PL_CRC + 64];
+static uint32_t tx_len, tx_pos, tx_dropped;
+static struct pl_link nio;
 static bool awaiting, loopback, trace, host;
-static uint8_t seq_now, dev_now, cmd_now;
-static absolute_time_t deadline;
+static uint8_t seq_now;
 static uint64_t sent_at;
 static uint32_t write_tail, write_peak;
-static uint32_t writes, unknown, frames_dropped;
+static uint32_t writes, unknown;
 static uint32_t we_count, we_min = UINT32_MAX, we_max, we_last;
 static char palm_log[96];
 static unsigned palm_log_used;
@@ -53,7 +46,8 @@ static void publish_status(void) {
 
 static const char *result_name(uint16_t r) {
     static const char *const names[] = {"ok", "no-host", "timeout", "bad-length",
-                                        "bad-check", "too-big", "aborted"};
+                                        "bad-check", "too-big", "aborted",
+                                        "unanswered", "refused"};
     return r < sizeof names / sizeof names[0] ? names[r] : "?";
 }
 
@@ -77,15 +71,30 @@ static void publish_reply(uint8_t seq, uint16_t result, const uint8_t *data, uin
     if (len) console_hex("  <", data, len < 64 ? len : 64);
 }
 
-static void slip_queue(const uint8_t *data, uint32_t len) {
-    tx_len = tx_pos = 0;
-    tx[tx_len++] = SLIP_END;
-    for (uint32_t i = 0; i < len; ++i) {
-        if (data[i] == SLIP_END) { tx[tx_len++] = SLIP_ESC; tx[tx_len++] = SLIP_ESC_END; }
-        else if (data[i] == SLIP_ESC) { tx[tx_len++] = SLIP_ESC; tx[tx_len++] = SLIP_ESC_ESC; }
-        else tx[tx_len++] = data[i];
+static uint32_t now_ms(void) { return to_ms_since_boot(get_absolute_time()); }
+
+/* The packet link's output, drained to USB by pump_usb. */
+static void nio_send(void *ctx, const uint8_t *data, size_t len) {
+    (void)ctx;
+    if (tx_pos == tx_len) tx_pos = tx_len = 0;
+    if (tx_len + len > sizeof tx) {
+        ++tx_dropped;
+        return;
     }
-    tx[tx_len++] = SLIP_END;
+    memcpy(tx + tx_len, data, len);
+    tx_len += (uint32_t)len;
+}
+
+static void nio_done(void *ctx, enum pl_outcome outcome, const uint8_t *body, size_t len) {
+    static const uint16_t result[] = {
+        [PL_ANSWERED] = SBN_RES_OK,         [PL_REFUSED] = SBN_RES_REFUSED,
+        [PL_UNANSWERED] = SBN_RES_UNANSWERED, [PL_TIMED_OUT] = SBN_RES_TIMEOUT,
+        [PL_NO_PEER] = SBN_RES_NO_HOST,     [PL_CANCELLED] = SBN_RES_ABORTED,
+    };
+    (void)ctx;
+    if (!awaiting) return;
+    if (len > SBN_RESP_MAX) return publish_reply(seq_now, SBN_RES_TOO_BIG, NULL, 0);
+    publish_reply(seq_now, result[outcome], body, len);
 }
 
 /* Send req to NIO, or answer with the verdict if the request was bad. */
@@ -93,22 +102,20 @@ static void doorbell(uint8_t seq, uint16_t verdict) {
     reg(SBN_R_ACK_SEQ, seq);
     sent_at = time_us_64();
     uint32_t len = req_len;
-    if (awaiting) console_printf("#%u abandons #%u\n", seq, seq_now);
-    awaiting = false;
+    if (awaiting) {
+        console_printf("#%u abandons #%u\n", seq, seq_now);
+        awaiting = false;
+        pl_cancel(&nio, now_ms());
+    }
     console_printf("#%u request %lu bytes\n", seq, (unsigned long)len);
     if (len) console_hex("  >", req, len < 64 ? len : 64);
     if (verdict != SBN_RES_OK) return publish_reply(seq, verdict, NULL, 0);
     if (loopback) return publish_reply(seq, SBN_RES_OK, req, len);
     if (!host) return publish_reply(seq, SBN_RES_NO_HOST, NULL, 0);
-    slip_queue(req, len);
     seq_now = seq;
-    dev_now = req[0];
-    cmd_now = len > 1 ? req[1] : 0;
     awaiting = true;
-    deadline = make_timeout_time_ms(REPLY_TIMEOUT_MS);
-    rx_len = 0;
-    rx_esc = rx_overflow = false;
     publish_status();
+    pl_request(&nio, req, len, now_ms());
 }
 
 static void palm_log_char(uint8_t c) {
@@ -123,8 +130,7 @@ static void palm_log_char(uint8_t c) {
 static void control(uint16_t value) {
     switch (value) {
     case SBN_CTL_ABORT:
-        if (awaiting) publish_reply(seq_now, SBN_RES_ABORTED, NULL, 0);
-        tx_len = tx_pos = 0;
+        pl_cancel(&nio, now_ms());
         break;
     case SBN_CTL_LOOPBACK_ON: loopback = true; break;
     case SBN_CTL_LOOPBACK_OFF: loopback = false; break;
@@ -205,40 +211,14 @@ static void drain_widths(void) {
     }
 }
 
-/* NIO answers with the request's device and command (command 0 when the
- * device is missing), so a late reply to an abandoned request is not taken
- * for the current one. */
-static bool reply_matches(void) {
-    return rx_len >= 2 && rx[0] == dev_now && (rx[1] == cmd_now || rx[1] == 0);
-}
-
-static void slip_byte(uint8_t c) {
-    if (c == SLIP_END) {
-        if (rx_len && awaiting && reply_matches()) {
-            if (rx_overflow) publish_reply(seq_now, SBN_RES_TOO_BIG, NULL, 0);
-            else publish_reply(seq_now, SBN_RES_OK, rx, rx_len);
-        } else if (rx_len) {
-            ++frames_dropped;
-            console_printf("dropped %lu-byte frame with no request waiting\n", (unsigned long)rx_len);
-        }
-        rx_len = 0;
-        rx_esc = rx_overflow = false;
-        return;
-    }
-    if (c == SLIP_ESC) { rx_esc = true; return; }
-    if (rx_esc) {
-        c = c == SLIP_ESC_END ? SLIP_END : c == SLIP_ESC_ESC ? SLIP_ESC : c;
-        rx_esc = false;
-    }
-    if (rx_len < SBN_RESP_MAX) rx[rx_len++] = c;
-    else rx_overflow = true;
-}
-
 static void pump_usb(void) {
     bool now = tud_cdc_n_connected(NIO_ITF);
     if (now != host) {
         host = now;
-        console_printf("NIO link %s\n", host ? "open" : "closed");
+        console_printf("NIO port %s\n", host ? "open" : "closed");
+        tx_len = tx_pos = 0;
+        if (host) pl_open(&nio, now_ms());
+        else pl_close(&nio);
         publish_status();
     }
     while (tx_pos < tx_len) {
@@ -248,15 +228,24 @@ static void pump_usb(void) {
         tx_pos += tud_cdc_n_write(NIO_ITF, tx + tx_pos, n < room ? n : room);
     }
     tud_cdc_n_write_flush(NIO_ITF);
+    enum pl_state was = nio.state;
     uint8_t buf[64];
     while (tud_cdc_n_available(NIO_ITF)) {
         uint32_t n = tud_cdc_n_read(NIO_ITF, buf, sizeof buf);
-        for (uint32_t i = 0; i < n; ++i) slip_byte(buf[i]);
+        pl_receive(&nio, buf, n, now_ms());
     }
-    if (awaiting && time_reached(deadline)) publish_reply(seq_now, SBN_RES_TIMEOUT, NULL, 0);
+    pl_poll(&nio, now_ms());
+    if (was == PL_AWAIT_ACK && nio.state >= PL_READY)
+        console_printf("NIO link generation %u: version %u, capacity %u, record timeout %u ms\n",
+                       nio.generation, nio.version, nio.capacity, nio.peer_timeout_ms);
+    else if (was >= PL_READY && nio.state == PL_QUIET)
+        console_printf("NIO link resyncing\n");
 }
 
 void link_init(void) {
+    nio.send = nio_send;
+    nio.done = nio_done;
+    pl_init(&nio);
     for (uint32_t i = 0; i < BUS_TABLE_WORDS; ++i) bus_cs1_words[i] = 0;
     reg(SBN_R_MAGIC, SBN_MAGIC_VALUE);
     reg(SBN_R_VERSION, SBN_ABI_VERSION);
@@ -319,9 +308,17 @@ static void status(void) {
                    (unsigned long)req_len);
     print_widths();
     print_settle();
-    console_printf("nio %s, %s, loopback %s, dropped frames %lu\n", host ? "open" : "closed",
-                   awaiting ? "waiting" : "idle", loopback ? "on" : "off",
-                   (unsigned long)frames_dropped);
+    console_printf("nio port %s, link %s gen %u cap %u, %s, loopback %s\n",
+                   host ? "open" : "closed", pl_state_name(nio.state), nio.generation,
+                   nio.capacity, awaiting ? "waiting" : "idle", loopback ? "on" : "off");
+    const struct pl_counters *c = &nio.count;
+    console_printf("link syncs %lu (%lu unanswered), requests %lu answers %lu refused %lu "
+                   "unanswered %lu timeouts %lu resends %lu corrupt %lu tx-dropped %lu\n",
+                   (unsigned long)c->syncs, (unsigned long)c->sync_timeouts,
+                   (unsigned long)c->requests, (unsigned long)c->answers,
+                   (unsigned long)c->refused, (unsigned long)c->unanswered,
+                   (unsigned long)c->timeouts, (unsigned long)c->resends,
+                   (unsigned long)c->corrupt, (unsigned long)tx_dropped);
 }
 
 static void pins(void) {

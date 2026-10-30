@@ -11,9 +11,9 @@
  * A request is one raw FujiBus packet: SBN_W_BEGIN with its length in bytes,
  * the bytes two per SBN_W_DATA word (first byte in D15-D8, an odd last byte
  * padded with 0), SBN_W_CHECK with the SBN_CHECK_STEP sum of those words, then
- * SBN_W_DOORBELL with a sequence 1-255. The firmware sends it to NIO with SLIP
- * framing and publishes the raw reply packet, its length, result and check,
- * then RESP_SEQ last; the Palm polls RESP_SEQ.
+ * SBN_W_DOORBELL with a sequence 1-255. The firmware sends it to NIO over NIO's
+ * packet link and publishes the raw reply packet, its length, result and
+ * check, then RESP_SEQ last; the Palm polls RESP_SEQ.
  */
 #ifndef SBNIO_H
 #define SBNIO_H
@@ -52,6 +52,8 @@
 #define SBN_RES_BAD_CHECK 4        /* request words do not match SBN_W_CHECK: resend */
 #define SBN_RES_TOO_BIG   5        /* reply longer than SBN_RESP_MAX */
 #define SBN_RES_ABORTED   6
+#define SBN_RES_UNANSWERED 7       /* NIO took it but sent no answer: it may have run */
+#define SBN_RES_REFUSED   8        /* NIO's link refused it: it did not run */
 
 /* Write registers: byte offset from the CS1 base */
 #define SBN_W(reg)        ((unsigned long)(reg) << 16)

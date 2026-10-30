@@ -1,5 +1,5 @@
 /* fujinet-nio-lib transport for Palm OS: raw FujiBus packets through the
- * springboard-nio CS1 link. The firmware does the SLIP framing to NIO. */
+ * springboard-nio CS1 link. The firmware carries them to NIO. */
 #include "sbn_client.h"
 #include "sbnio.h"
 #include "fujinet-nio.h"
@@ -31,6 +31,7 @@ uint8_t fn_transport_exchange_buffers(const uint8_t *request, uint16_t request_l
     case SBN_RES_OK: return FN_OK;
     case SBN_RES_NO_HOST: return FN_ERR_TRANSPORT;
     case SBN_RES_TIMEOUT:
+    case SBN_RES_UNANSWERED:
     case SBN_NO_ANSWER: return FN_ERR_TIMEOUT;
     case SBN_RES_BAD_LEN: return FN_ERR_INVALID;
     case SBN_RES_ABORTED: return FN_ERR_ABORTED;

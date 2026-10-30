@@ -5,8 +5,8 @@ through a Springboard module: a Waveshare Core2350B (RP2350B) on mozzwald's
 Springboard carrier, with NIO running on this Mac over the RP2350's USB.
 
 ```
-Prism (Palm OS 3.5)  --Springboard CS0/CS1-->  RP2350  --USB serial, SLIP-->  fujinet-nio (Mac)
-  SB NIO app            ROM / two-way link     firmware/      FujiBus            fujibus-rs232-debug
+Prism (Palm OS 3.5)  --Springboard CS0/CS1-->  RP2350  --USB serial, packet link-->  fujinet-nio (Mac)
+  SB NIO app            ROM / two-way link     firmware/      FujiBus                   fujibus-link-serial-debug
 ```
 
 The two chip selects (`include/sbnio.h`, ABI 4):
@@ -22,8 +22,9 @@ The two chip selects (`include/sbnio.h`, ABI 4):
     from a table the firmware keeps current, so reads have no side effects.
 - A request is BEGIN with its length, the raw FujiBus packet two bytes per DATA
   write, CHECK, then DOORBELL with a sequence. The firmware checks length and
-  check word (a mismatch answers BAD_CHECK and the Palm resends), SLIP-frames
-  the packet onto USB port 0, where NIO's RS-232 build is listening, and
+  check word (a mismatch answers BAD_CHECK and the Palm resends), sends the
+  packet over NIO's packet link on USB port 0 (CRC-checked records in a
+  generation agreed with Sync/SyncAck, `firmware/src/packet_link.c`), and
   publishes NIO's reply with its own check word, which the Palm verifies.
 
 The read engine is mozzwald's hardware-proven Experiment 2 (`fujinet-nio`
@@ -66,8 +67,13 @@ host/sbcon.py status pins regs
 host/sbcon.py "send 450106004c00"   # Clock.GetTime straight to NIO, no Palm needed
 ```
 
-NIO is `repos/fujinet-nio/build/fujibus-rs232-debug/fujinet-nio`
-(`cmake --preset fujibus-rs232-debug`), run in `host/nio-run/`.
+NIO is `repos/fujinet-nio/build/fujibus-link-serial-debug/fujinet-nio`
+(`cmake --preset fujibus-link-serial-debug`), run in `host/nio-run/`; set `NIO`
+to a binary built elsewhere. The packet-link controller has a host test:
+
+```sh
+cc -Ifirmware/src firmware/tests/test_packet_link.c firmware/src/packet_link.c -o /tmp/pl && /tmp/pl
+```
 
 Console commands: `status`, `pins` (live bus levels), `watch`, `scan [ms]`,
 `float`, `regs`, `send <hex>`, `trace on|off` (log every CS1 write),
@@ -120,6 +126,14 @@ for the token mailbox), Time, and NIO Net HTTP 200 in 410 ms, HTTPS 200 in
 failures; WE stays low 340-406 ns per write and the firmware samples 53 ns
 in. mozzwald's Experiment 3 had shown the Prism's CS1 writes can be captured;
 this uses one GPIO-base-16 snapshot per write instead of pairing two.
+
+The same day the firmware's SLIP framing to NIO's RS-232 build gave way to NIO's
+packet link (`fujibus-link-serial-debug`). On the Prism: Echo 512/512 with the
+write count right, Loop 17/17 at 99 KB/s, Time, and NIO Net reading the
+577-byte HTTP page in 240 ms (was 410) and the HTTPS one in 370 ms (was 660).
+111 requests in one link generation, all answered in 0-1 ms at the firmware,
+with no resends, corrupt records or timeouts; 15,095 CS1 writes, no check
+failures.
 
 Next: News and Mastodon on the same shim, `host/tools/verify-rom.py` for
 multi-app ROMs (it still expects one database), a RAM-resident install so a module

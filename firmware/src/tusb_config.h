@@ -5,7 +5,7 @@
 #define CFG_TUD_ENABLED        1
 #define CFG_TUD_ENDPOINT0_SIZE 64
 
-/* Port 0 carries SLIP-framed FujiBus to NIO; port 1 is the text console. */
+/* Port 0 is the packet link to NIO; port 1 is the text console. */
 #define CFG_TUD_CDC            2
 #define CFG_TUD_MSC            0
 #define CFG_TUD_HID            0
