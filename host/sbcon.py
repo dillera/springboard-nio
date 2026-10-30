@@ -74,6 +74,20 @@ def open_port(path):
     return fd
 
 
+def reopen():
+    while True:
+        time.sleep(1)
+        path = os.environ.get("SBNIO_CONSOLE") or find_port("Console")
+        if path:
+            try:
+                fd = open_port(path)
+                sys.stdout.write("[console reconnected]\n")
+                sys.stdout.flush()
+                return fd
+            except OSError:
+                pass
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("-t", "--time", type=float, help="seconds to listen (default: forever, or 1.5 after commands)")
@@ -102,13 +116,21 @@ def main():
     try:
         while end is None or time.time() < end:
             ready, _, _ = select.select([fd], [], [], 0.2)
-            if ready:
-                try:
-                    data = os.read(fd, 4096)
-                except BlockingIOError:
-                    continue
-                sys.stdout.write(data.decode(errors="replace"))
-                sys.stdout.flush()
+            if not ready:
+                continue
+            try:
+                data = os.read(fd, 4096)
+            except BlockingIOError:
+                continue
+            except OSError:
+                # The board re-enumerated (flash or reset): follow it when listening forever.
+                os.close(fd)
+                if end is not None:
+                    return
+                fd = reopen()
+                continue
+            sys.stdout.write(data.decode(errors="replace"))
+            sys.stdout.flush()
     except KeyboardInterrupt:
         pass
     os.close(fd)

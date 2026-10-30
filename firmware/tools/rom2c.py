@@ -4,9 +4,9 @@ import sys
 import zlib
 
 data = open(sys.argv[1], "rb").read()
-# The mailbox occupies CS0 offsets 0x8000 and up (include/sbnio.h).
-if not 512 <= len(data) <= 0x8000 or len(data) % 2:
-    sys.exit(f"{sys.argv[1]}: {len(data)} bytes; a ROM must be 512-32768 bytes and even")
+# The mailbox occupies CS0 offsets 0xE000 and up (include/sbnio.h).
+if not 512 <= len(data) <= 0xE000 or len(data) % 2:
+    sys.exit(f"{sys.argv[1]}: {len(data)} bytes; a ROM must be 512-57344 bytes and even")
 with open(sys.argv[2], "w") as out:
     out.write("#include <stdint.h>\n")
     out.write(f"const uint32_t sbnio_rom_size = {len(data)};\n")

@@ -1,11 +1,11 @@
 /* springboard-nio mailbox ABI, shared by the RP2350 firmware and Palm code.
  *
  * Everything runs over CS0, so a module only needs the ROM select. The ROM
- * image may use offsets 0x0000-0x7FFF; the rest of the first 64 KiB of the CS0
+ * image may use offsets 0x0000-0xDFFF; the rest of the first 64 KiB of the CS0
  * window (HsCardAttrGet CsBase) belongs to the mailbox:
  *
- *   0x8000-0xBFFF  registers and the reply, read with MOVE.W
- *   0xC000-0xFFFF  tokens: the Palm sends a byte by READING
+ *   0xE000-0xEFFF  registers and the reply, read with MOVE.W
+ *   0xF000-0xFFFF  tokens: the Palm sends a byte by READING
  *                  SBN_TOKEN(type, byte); the firmware logs which address
  *                  was read. The value read back is meaningless.
  *
@@ -18,23 +18,23 @@
 #define SBNIO_H
 
 #define SBN_MAGIC_VALUE   0x464E   /* "FN" */
-#define SBN_ABI_VERSION   0x0002
+#define SBN_ABI_VERSION   0x0003
 
 /* Registers, as byte offsets from the CS0 base */
-#define SBN_REGS          0x8000
-#define SBN_R_MAGIC       0x8000
-#define SBN_R_VERSION     0x8002
-#define SBN_R_STATUS      0x8004
-#define SBN_R_ACK_SEQ     0x8006   /* last doorbell sequence received */
-#define SBN_R_RESP_SEQ    0x8008   /* sequence of the reply now in RESP */
-#define SBN_R_RESP_LEN    0x800A   /* reply length in bytes */
-#define SBN_R_RESULT      0x800C   /* SBN_RES_* for RESP_SEQ */
-#define SBN_R_TOKENS      0x800E   /* tokens seen, low 16 bits */
-#define SBN_R_ECHO        0x8010   /* last SBN_TK_ECHO byte */
-#define SBN_R_REQ_BYTES   0x8012   /* request bytes since the last BEGIN */
-#define SBN_R_TICKS       0x8014   /* firmware milliseconds, low 16 bits */
-#define SBN_R_RESP        0x9000   /* reply bytes, two per word, first byte in D15-D8 */
-#define SBN_RESP_MAX      4096
+#define SBN_REGS          0xE000
+#define SBN_R_MAGIC       0xE000
+#define SBN_R_VERSION     0xE002
+#define SBN_R_STATUS      0xE004
+#define SBN_R_ACK_SEQ     0xE006   /* last doorbell sequence received */
+#define SBN_R_RESP_SEQ    0xE008   /* sequence of the reply now in RESP */
+#define SBN_R_RESP_LEN    0xE00A   /* reply length in bytes */
+#define SBN_R_RESULT      0xE00C   /* SBN_RES_* for RESP_SEQ */
+#define SBN_R_TOKENS      0xE00E   /* tokens seen, low 16 bits */
+#define SBN_R_ECHO        0xE010   /* last SBN_TK_ECHO byte */
+#define SBN_R_REQ_BYTES   0xE012   /* request bytes since the last BEGIN */
+#define SBN_R_TICKS       0xE014   /* firmware milliseconds, low 16 bits */
+#define SBN_R_RESP        0xE800   /* reply bytes, two per word, first byte in D15-D8 */
+#define SBN_RESP_MAX      2048
 #define SBN_REQ_MAX       4096
 
 /* SBN_R_STATUS bits */
@@ -50,8 +50,8 @@
 #define SBN_RES_TOO_BIG   5        /* reply longer than SBN_RESP_MAX */
 #define SBN_RES_ABORTED   6
 
-/* Tokens: type in A9-A13, byte in A1-A8 */
-#define SBN_TOKENS        0xC000
+/* Tokens: type in A9-A11, byte in A1-A8 */
+#define SBN_TOKENS        0xF000
 #define SBN_TOKEN(type, byte) (SBN_TOKENS | (type) << 9 | ((byte) & 0xFF) << 1)
 #define SBN_TK_BEGIN      0        /* start a new request */
 #define SBN_TK_BYTE       1        /* append one request byte */

@@ -34,7 +34,10 @@ reads still come from a second table, unused for now.
 | --- | --- |
 | `include/sbnio.h` | CS1 register map shared by the firmware and the Palm app |
 | `firmware/` | RP2350 firmware (pico-sdk 2.3.1, Arm GNU 14.2) |
-| `palm/` | SB NIO Palm app and the Springboard ROM build (Docker `sbnio-palm`) |
+| `palm/` | Palm apps and the Springboard ROM build (Docker `sbnio-palm`) |
+| `palm/nio-lib/` | fujinet-nio-lib for Palm OS: shim headers and the mailbox transport |
+| `palm/compat/` | classic fujinet-lib network calls on fujinet-nio-lib, for fujinet-palm apps |
+| `palm/nionet/` | NIO Net: HTTP, HTTPS and JSON-translation tests |
 | `host/` | Mac tools: `flash.sh`, `nio.sh`, `sbcon.py` (firmware console) |
 | `rom/` | local ROM images, not tracked (mozzwald's `baseline-v3.rom` comes from his private repo) |
 | `docs/hardware/` | carrier pinout |
@@ -95,6 +98,11 @@ Lessons from bring-up:
 - The app asks for a 450 ns access time, but the Prism reports 330 back; it
   works at 330.
 
-Next: run NIO network commands (HTTP through NetworkDevice), a fujinet-nio-lib
-transport for the mailbox, and a RAM-resident app so a module reflash cannot
-crash a running app.
+Networking (later the same day): fujinet-nio-lib runs on the Palm over the
+mailbox. NIO Net gets HTTP 200 in 460 ms and HTTPS 200 in 650 ms, and the ISS
+position through NIO's JSON translator; fujinet-palm's ISS Tracker and Weather
+run unchanged on the classic-API shim. 1,610 requests, no failures. The ROM
+now holds four apps (48 KB); the mailbox moved to 0xE000 to make room.
+
+Next: News and Mastodon on the same shim, a RAM-resident install so a module
+reflash cannot crash a running app, and the ESP32-S3 as USB host.

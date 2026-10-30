@@ -15,7 +15,7 @@
 #include <string.h>
 
 #define NIO_ITF 0
-#define REPLY_TIMEOUT_MS 10000
+#define REPLY_TIMEOUT_MS 30000
 #define SLIP_END 0xC0
 #define SLIP_ESC 0xDB
 #define SLIP_ESC_END 0xDC
@@ -131,7 +131,7 @@ static void control(uint8_t value) {
 
 static void handle_token(uint32_t snapshot) {
     uint32_t offset = BUS_TOKEN_OFFSET(snapshot);
-    uint8_t type = (uint8_t)(offset >> 9 & 0x1f), byte = (uint8_t)(offset >> 1);
+    uint8_t type = (uint8_t)(offset >> 9 & 7), byte = (uint8_t)(offset >> 1);
     ++tokens;
     if (trace) console_printf("token %u %02x (%08lx)\n", type, byte, (unsigned long)snapshot);
     switch (type) {

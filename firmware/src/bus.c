@@ -119,14 +119,14 @@ void bus_load_rom(const uint8_t *rom, uint32_t size) {
     }
 }
 
-/* PIO2 SM0, GPIO base 0, Y = 3, JMP pin OE: wait for a CS0 read with A15 and
- * A14 set (the token window), snapshot GPIO0-31, then wait for CS0 to rise.
+/* PIO2 SM0, GPIO base 0, Y = 15, JMP pin OE: wait for a CS0 read with A12-A15
+ * set (the token window), snapshot GPIO0-31, then wait for CS0 to rise.
  * CS1 is not looked at, so the token path works without it. */
 void bus_token_capture_init(void) {
     uint16_t code[7];
     code[0] = pio_encode_mov(pio_osr, pio_pins);
-    code[1] = pio_encode_out(pio_null, 14);
-    code[2] = pio_encode_out(pio_x, 3);           /* A14, A15, CS0 */
+    code[1] = pio_encode_out(pio_null, 12);
+    code[2] = pio_encode_out(pio_x, 5);           /* A12-A15, CS0 */
     code[3] = pio_encode_jmp_x_ne_y(0);
     code[4] = pio_encode_jmp_pin(0);              /* OE still high */
     code[5] = pio_encode_in(pio_pins, 32);
@@ -143,7 +143,7 @@ void bus_token_capture_init(void) {
     sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_RX);
     sm_config_set_clkdiv_int_frac8(&c, 1, 0);
     pio_sm_init(pio2, 0, 0, &c);
-    pio_sm_exec(pio2, 0, pio_encode_set(pio_y, 3));
+    pio_sm_exec(pio2, 0, pio_encode_set(pio_y, 15));
 
     token_dma = dma_claim_unused_channel(true);
     dma_channel_config d = dma_channel_get_default_config(token_dma);
