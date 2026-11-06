@@ -1,13 +1,13 @@
 /* SB NIO: exercise the springboard-nio CS1 link and talk to fujinet-nio.
  *
- * sbn_client finds the module with Handspring's card attributes (CsBase,
+ * fujinet-nio-lib finds the module with Handspring's card attributes (CsBase,
  * CsSize), never a fixed address; the link is plain 16-bit MOVE.W reads and
  * writes on CS1. See include/sbnio.h. Each line shown is also sent to the
  * RP2350 console. */
 #include <PalmOS.h>
 #include "sbnio_rsc.h"
 #include "sbnio.h"
-#include "sbn_client.h"
+#include "fujinet-nio.h"
 
 /* Handspring extension calls through the HsSelector trap (HsExt.h). */
 Err HsCardAttrGet(UInt16 cardNo, UInt16 attr, void *valueP)
@@ -56,7 +56,7 @@ static void say(const char *s)
     gLines[gLineCount % LINES][LINE_CHARS - 1] = 0;
     gLineCount++;
     draw();
-    sbn_log(s);
+    fn_palmos_log(s);
 }
 
 static void two(char *out, UInt16 v)
@@ -83,8 +83,8 @@ static const char *res_name(UInt16 r)
     case SBN_RES_BAD_CHECK: return "bad check";
     case SBN_RES_TOO_BIG: return "too big";
     case SBN_RES_ABORTED: return "aborted";
-    case SBN_NO_ANSWER: return "no answer";
-    case SBN_BAD_READ: return "bad read";
+    case FN_PALMOS_NO_ANSWER: return "no answer";
+    case FN_PALMOS_BAD_READ: return "bad read";
     }
     return "?";
 }
@@ -94,7 +94,7 @@ static Boolean wait_reg(UInt16 off, UInt16 mask, UInt16 want)
 {
     UInt32 start = TimGetTicks(), limit = WAIT_MS * (UInt32)SysTicksPerSecond() / 1000;
 
-    while ((sbn_read(off) & mask) != want)
+    while ((fn_palmos_read(off) & mask) != want)
         if (TimGetTicks() - start > limit) return false;
     return true;
 }
@@ -156,20 +156,20 @@ static void probe(void)
     UInt16 t1, t2;
     char buf[48];
 
-    StrPrintF(buf, "card %u CS0 %lx", sbn_card(), sbn_cs0());
+    StrPrintF(buf, "card %u CS0 %lx", fn_palmos_card(), fn_palmos_cs0());
     say(buf);
-    StrPrintF(buf, "CS1 %lx size %lx", sbn_base(), sbn_base() - sbn_cs0());
+    StrPrintF(buf, "CS1 %lx size %lx", fn_palmos_cs1(), fn_palmos_cs1() - fn_palmos_cs0());
     say(buf);
     StrPrintF(buf, "access time %lu ns", gNs);
     say(buf);
-    StrPrintF(buf, "magic %x ver %x status %x", sbn_read(SBN_R_MAGIC), sbn_read(SBN_R_VERSION),
-              sbn_read(SBN_R_STATUS));
+    StrPrintF(buf, "magic %x ver %x status %x", fn_palmos_read(SBN_R_MAGIC), fn_palmos_read(SBN_R_VERSION),
+              fn_palmos_read(SBN_R_STATUS));
     say(buf);
-    StrPrintF(buf, "writes %x", sbn_read(SBN_R_WRITES));
+    StrPrintF(buf, "writes %x", fn_palmos_read(SBN_R_WRITES));
     say(buf);
-    t1 = sbn_read(SBN_R_TICKS);
+    t1 = fn_palmos_read(SBN_R_TICKS);
     SysTaskDelay(SysTicksPerSecond() / 10);
-    t2 = sbn_read(SBN_R_TICKS);
+    t2 = fn_palmos_read(SBN_R_TICKS);
     StrPrintF(buf, "ticks %x>%x %s", t1, t2, t1 != t2 ? "(live)" : "(STUCK)");
     say(buf);
 }
@@ -188,24 +188,24 @@ static UInt16 echo_value(UInt16 n)
 /* Does every write the Palm makes to CS1 arrive with all 16 bits intact? */
 static void echo(void)
 {
-    UInt16 i, v, bad = 0, badAt = 0, badWrote = 0, badRead = 0, before = sbn_read(SBN_R_WRITES);
+    UInt16 i, v, bad = 0, badAt = 0, badWrote = 0, badRead = 0, before = fn_palmos_read(SBN_R_WRITES);
     UInt32 t0 = TimGetTicks(), ms;
     char buf[48];
 
     for (i = 0; i < ECHO_WORDS && bad < ECHO_MAX_BAD; i++) {
         v = echo_value(i);
-        sbn_write(SBN_W_ECHO, v);
+        fn_palmos_write(SBN_W_ECHO, v);
         if (wait_reg(SBN_R_ECHO, 0xFFFF, v)) continue;
         if (!bad++) {
             badAt = i;
             badWrote = v;
-            badRead = sbn_read(SBN_R_ECHO);
+            badRead = fn_palmos_read(SBN_R_ECHO);
         }
     }
     ms = (TimGetTicks() - t0) * 1000 / SysTicksPerSecond();
     /* Count before logging: say() itself writes to CS1. */
     wait_reg(SBN_R_WRITES, 0xFFFF, (UInt16)(before + i));
-    v = sbn_read(SBN_R_WRITES) - before;
+    v = fn_palmos_read(SBN_R_WRITES) - before;
     StrPrintF(buf, "echo %u/%u ok in %lu ms", i - bad, i, ms);
     say(buf);
     if (bad) {
@@ -221,7 +221,7 @@ static void echo(void)
 
 static Boolean loopback(Boolean on)
 {
-    sbn_write(SBN_W_CONTROL, on ? SBN_CTL_LOOPBACK_ON : SBN_CTL_LOOPBACK_OFF);
+    fn_palmos_write(SBN_W_CONTROL, on ? SBN_CTL_LOOPBACK_ON : SBN_CTL_LOOPBACK_OFF);
     return wait_reg(SBN_R_STATUS, SBN_ST_LOOPBACK, on ? SBN_ST_LOOPBACK : 0);
 }
 
@@ -252,12 +252,12 @@ static void loop(void)
         return;
     }
     /* Stop at the first unanswered request: each one waits 35 s. */
-    for (n = 0; n < LOOP_FIXED + LOOP_RANDOM && result != SBN_NO_ANSWER; n++) {
+    for (n = 0; n < LOOP_FIXED + LOOP_RANDOM && result != FN_PALMOS_NO_ANSWER; n++) {
         len = n < LOOP_FIXED ? lens[n] : (UInt16)(1 + (rnd() & (BUF_MAX - 1)));
         fill(gReq, len);
         /* Time only the exchanges, not filling the request. */
         t = TimGetTicks();
-        result = sbn_exchange(gReq, len, gResp, BUF_MAX, &got);
+        result = fn_palmos_exchange(gReq, len, gResp, BUF_MAX, &got);
         ticks += TimGetTicks() - t;
         bytes += len;
         if (result == SBN_RES_OK && got == len && MemCmp(gReq, gResp, len) == 0) {
@@ -299,7 +299,7 @@ static void nio_time(void)
     DateTimeType dt;
     char buf[48], a[3], b[3], c[3], d[3], e[3];
 
-    result = sbn_exchange(gReq, fb_request(gReq, 0x45, 0x01), gResp, BUF_MAX, &got);
+    result = fn_palmos_exchange(gReq, fb_request(gReq, 0x45, 0x01), gResp, BUF_MAX, &got);
     if (result != SBN_RES_OK) {
         StrPrintF(buf, "GetTime: link %s", res_name(result));
         say(buf);
@@ -317,7 +317,7 @@ static void nio_time(void)
     StrPrintF(buf, "NIO time %u-%s-%s %s:%s:%s UTC", dt.year, a, b, c, d, e);
     say(buf);
 
-    result = sbn_exchange(gReq, fb_request(gReq, 0x45, 0x04), gResp, BUF_MAX, &got);
+    result = fn_palmos_exchange(gReq, fb_request(gReq, 0x45, 0x04), gResp, BUF_MAX, &got);
     status = result == SBN_RES_OK ? fb_reply(got, 0x45, 0x04, &p, &len) : 0xFF;
     if (!status && len >= 2 && p[1] < 30 && 2 + p[1] <= len) {
         StrCopy(buf, "NIO timezone ");
@@ -331,14 +331,14 @@ static void nio_time(void)
  * then run the chosen test. */
 static void task(void)
 {
-    if (!sbn_base()) {
-        if (!sbn_open()) {
+    if (!fn_palmos_cs1()) {
+        if (!fn_palmos_open()) {
             say("No Springboard module (ABI 4)");
             return;
         }
         gNs = ACCESS_NS;
-        HsCardAttrSet(sbn_card(), hsAttrAccessTime, &gNs);
-        if (HsCardAttrGet(sbn_card(), hsAttrAccessTime, &gNs)) gNs = 0;
+        HsCardAttrSet(fn_palmos_card(), hsAttrAccessTime, &gNs);
+        if (HsCardAttrGet(fn_palmos_card(), hsAttrAccessTime, &gNs)) gNs = 0;
     }
     gTask();
 }
@@ -352,7 +352,7 @@ static void run(void (*fn)(void))
     err = guarded(task);
     if (err) {
         /* Forget the module first: say() would log to it. */
-        sbn_close();
+        fn_palmos_close();
         StrPrintF(buf, "Module removed (err %x)", err);
         say(buf);
     }

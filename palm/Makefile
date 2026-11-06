@@ -1,10 +1,11 @@
-# Run inside the sbnio-palm container (./build.sh). Builds the Palm apps, the
-# fujinet-nio-lib port and a Springboard ROM carrying the apps, using
-# Handspring's Palm-MakeROM from mozzwald's fujinet-palm checkout.
+# Run inside the sbnio-palm container (./build.sh). Builds fujinet-nio-lib's
+# palmos-springboard target, the Palm apps on it and a Springboard ROM carrying
+# the apps, using Handspring's Palm-MakeROM from mozzwald's fujinet-palm checkout.
 CC = m68k-palmos-gcc
-CFLAGS = -O2 -Wall -palmos3.5 -I../include -Icommon
-NIOLIB = nio-lib/build/libfujinetnio.a
-NIOFLAGS = -Inio-lib/shim -I../repos/fujinet-nio-lib/include
+CFLAGS = -O2 -Wall -palmos3.5 -I../include
+NIODIR = ../repos/fujinet-nio-lib
+NIOLIB = $(NIODIR)/build/fujinet-nio-palmos-springboard.a
+NIOFLAGS = -I$(NIODIR)/include/palmos -I$(NIODIR)/include
 MAKEROM_SRC = ../repos/fujinet-palm/tools/makerom
 SDK_INC = /opt/palmdev/sdk-3.5/include
 B = build
@@ -21,11 +22,11 @@ $(B)/Palm-MakeROM: $(wildcard $(MAKEROM_SRC)/*.cpp $(MAKEROM_SRC)/*.h)
 	  $(MAKEROM_SRC)/Main.cpp $(MAKEROM_SRC)/Utility.cpp $(MAKEROM_SRC)/Crc.cpp -o $@
 
 $(NIOLIB): FORCE
-	$(MAKE) -C nio-lib
+	$(MAKE) -C $(NIODIR) palmos-springboard SBNIO_ABI_INCLUDE=-I$(abspath ../include)
 
-$(B)/sbnio/sbnio: sbnio/sbnio.c sbnio/sbnio_rsc.h common/sbn_client.c common/sbn_client.h ../include/sbnio.h
+$(B)/sbnio/sbnio: sbnio/sbnio.c sbnio/sbnio_rsc.h ../include/sbnio.h $(NIOLIB)
 	mkdir -p $(@D)
-	$(CC) $(CFLAGS) -o $@ sbnio/sbnio.c common/sbn_client.c
+	$(CC) $(CFLAGS) $(NIOFLAGS) -o $@ sbnio/sbnio.c $(NIOLIB)
 
 $(B)/nionet/nionet: nionet/nionet.c nionet/nionet_rsc.h $(NIOLIB)
 	mkdir -p $(@D)
@@ -68,6 +69,6 @@ $(B)/sbnio.rom: $(patsubst %,$(B)/%.prc,$(APPS)) $(B)/Palm-MakeROM
 
 clean:
 	rm -rf $(B)
-	$(MAKE) -C nio-lib clean
+	$(MAKE) -C $(NIODIR) clean
 
 .PHONY: all clean FORCE

@@ -42,13 +42,12 @@ PIO2 machine times WE low on every CS1 write (`status`, `widths`).
 | `include/sbnio.h` | CS1 link ABI shared by the firmware and the Palm apps |
 | `firmware/` | RP2350 firmware (pico-sdk 2.3.1, Arm GNU 14.2) |
 | `palm/` | Palm apps and the Springboard ROM build (Docker `sbnio-palm`) |
-| `palm/nio-lib/` | fujinet-nio-lib for Palm OS: shim headers and the CS1 link transport |
 | `palm/compat/` | classic fujinet-lib network calls on fujinet-nio-lib, for fujinet-palm apps |
 | `palm/nionet/` | NIO Net: HTTP, HTTPS and JSON-translation tests |
 | `host/` | Mac tools: `flash.sh`, `nio.sh`, `sbcon.py` (firmware console) |
 | `rom/` | local ROM images, not tracked (mozzwald's `baseline-v3.rom` comes from his private repo) |
 | `docs/hardware/` | carrier pinout |
-| `repos/` | upstream checkouts (not tracked): mozzwald's `fujinet-nio` (`visor`), `fujinet-palm` (`visor`) and the private `handspring-visor-plan` |
+| `repos/` | upstream checkouts (not tracked): mozzwald's `fujinet-nio` (`visor`), `fujinet-palm` (`visor`) and the private `handspring-visor-plan`; `fujinet-nio-lib` (`master`, its `palmos-springboard` target) |
 
 
 ## Building and running

@@ -6,7 +6,6 @@
 #include <PalmOS.h>
 #include "nionet_rsc.h"
 #include "fujinet-nio.h"
-#include "sbn_client.h"
 
 #define LINES 11
 #define LINE_CHARS 40
@@ -34,7 +33,7 @@ static void say(const char *s)
     gLines[gLineCount % LINES][LINE_CHARS - 1] = 0;
     gLineCount++;
     draw();
-    sbn_log(s);
+    fn_palmos_log(s);
 }
 
 static Boolean ready(void)
@@ -168,7 +167,7 @@ static Boolean MainFormHandleEvent(EventType *e)
 {
     if (e->eType == frmOpenEvent) {
         FrmDrawForm(FrmGetActiveForm());
-        say(sbn_open() ? "Springboard NIO module found" : "No Springboard NIO module");
+        say(fn_palmos_open() ? "Springboard NIO module found" : "No Springboard NIO module");
         return true;
     }
     if (e->eType == ctlSelectEvent) {
