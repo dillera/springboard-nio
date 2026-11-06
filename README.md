@@ -47,17 +47,19 @@ PIO2 machine times WE low on every CS1 write (`status`, `widths`).
 | `host/` | Mac tools: `flash.sh`, `nio.sh`, `sbcon.py` (firmware console) |
 | `rom/` | local ROM images, not tracked (mozzwald's `baseline-v3.rom` comes from his private repo) |
 | `docs/hardware/` | carrier pinout |
-| `repos/` | upstream checkouts (not tracked): mozzwald's `fujinet-nio` (`visor`), `fujinet-palm` (`visor`) and the private `handspring-visor-plan`; `fujinet-nio-lib` (`master`, its `palmos-springboard` target); `fujinet-nio-master` (fujinet-nio `master`, the NIO that runs) |
+| `repos/` | upstream checkouts (not tracked): mozzwald's `fujinet-nio` (`visor`), `fujinet-palm` (`visor`) and the private `handspring-visor-plan`; `fujinet-nio-lib` (`master`, its `palmos-springboard` target); `fujinet-nio-master` (fujinet-nio `master`, the NIO that runs); `fujinet-palm-nio` (dillera/fujinet-palm `nio`, for FI Config) |
 
 
 ## Building and running
 
 Prerequisites: Arm GNU toolchain 14.2 in `~/opt/arm-gnu-toolchain-14.2.rel1-darwin-arm64-arm-none-eabi`,
-`picotool`, Docker with the `palmdev` image, and the pinned pico-sdk/apio under
-`repos/fujinet-nio/bridges/rp2350-springboard/.deps`.
+`picotool`, Docker with the `palmdev` image, the pinned pico-sdk/apio under
+`repos/fujinet-nio/bridges/rp2350-springboard/.deps`, and a fujinet-palm
+checkout on its `nio` branch for FI Config: `repos/fujinet-palm-nio`, or set
+`FI_PALM`.
 
 ```sh
-palm/build.sh                 # palm/build/sbnio.prc and sbnio.rom
+palm/build.sh                 # palm/build/*.prc and sbnio.rom
 host/flash.sh                 # build firmware with that ROM, flash, restart NIO
 host/flash.sh --palm          # both
 host/nio.sh start|stop|restart|status
@@ -137,3 +139,18 @@ failures.
 Next: News and Mastodon on the same shim, `host/tools/verify-rom.py` for
 multi-app ROMs (it still expects one database), a RAM-resident install so a module
 reflash cannot crash a running app, and the ESP32-S3 as USB host.
+
+## FI Config in the module ROM (2026-11-05)
+
+ROM "SBNIO 0.4" holds SB NIO, NIO Net, FI Config, ISS Tracker and Weather
+(62,274 of 65,536 bytes). FI Config is fujinet-palm's, from its `nio` branch,
+built with `FI_NO_HOTSYNC`: it browses a TNFS server through NIO's FileDevice
+and installs a `.prc`, `.pdb` or `.pqa` straight into RAM with `ExgDBRead`,
+asking before it replaces a copy already there. There is no HotSync queue,
+since no HotSync stands behind the module.
+
+On the Prism it installed FN FujiPet (31,571 bytes) from fujinet.diller.org in
+22.6 s: 62 ReadFile requests of 512 bytes, about 0.36 s each. About 0.32 s of
+that is NIO opening the TNFS file and seven read-ahead handles, one round trip
+after another, then closing them all, because FileDevice opens the file again
+for every read.

@@ -9,9 +9,13 @@ NIOFLAGS = -I$(NIODIR)/include/palmos -I$(NIODIR)/include
 MAKEROM_SRC = ../repos/fujinet-palm/tools/makerom
 SDK_INC = /opt/palmdev/sdk-3.5/include
 B = build
-APPS = sbnio nionet isstracker weather
+# The module ROM holds up to 64 KB; these five take about 62 KB.
+APPS = sbnio nionet ficonfig isstracker weather
 FNPALM = ../repos/fujinet-palm/palm/apps
 COMPAT = compat/fnapp.c compat/fn_classic.c
+# fujinet-palm's nio branch, for FI Config (build.sh mounts it).
+FI_PALM ?= ../repos/fujinet-palm-nio
+FICONFIG = $(abspath $(FI_PALM))/apps/FujiConfig
 
 all: $(B)/sbnio.rom
 
@@ -31,6 +35,23 @@ $(B)/sbnio/sbnio: sbnio/sbnio.c sbnio/sbnio_rsc.h ../include/sbnio.h $(NIOLIB)
 $(B)/nionet/nionet: nionet/nionet.c nionet/nionet_rsc.h $(NIOLIB)
 	mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(NIOFLAGS) -o $@ nionet/nionet.c $(NIOLIB)
+
+# FI Config from fujinet-palm, without its HotSync queue (FI_NO_HOTSYNC): it
+# installs straight into RAM with ExgDBRead. Same name and creator as on the
+# cradle. FN_MAX_PACKET_SIZE is the library's for palmos-springboard (its
+# default, 1024).
+$(B)/ficonfig/ficonfig: $(FICONFIG)/FujiConfig.c $(FICONFIG)/filedev.c $(wildcard $(FICONFIG)/*.h) $(NIOLIB)
+	mkdir -p $(@D)
+	$(CC) $(CFLAGS) $(NIOFLAGS) -DFN_MAX_PACKET_SIZE=1024 -DFI_NO_HOTSYNC '-DAPP_CREATOR_STR="ANHS"' -I$(FICONFIG) \
+	  -I$(abspath $(FI_PALM))/common -o $@ $(FICONFIG)/FujiConfig.c $(FICONFIG)/filedev.c $(NIOLIB)
+
+$(B)/ficonfig/bin.stamp: $(FICONFIG)/FujiConfig.rcp $(FICONFIG)/FujiConfigRsc.h $(FICONFIG)/icon.bmp
+	mkdir -p $(@D)
+	cd $(@D) && rm -f *.bin && pilrc -q -D FI_NO_HOTSYNC -I $(FICONFIG) $(FICONFIG)/FujiConfig.rcp
+	touch $@
+
+$(B)/ficonfig.prc: $(B)/ficonfig/ficonfig $(B)/ficonfig/bin.stamp
+	cd $(B)/ficonfig && build-prc -n "FI Config" -c ANHS -o ../ficonfig.prc ficonfig *.bin
 
 # fujinet-palm apps, unchanged, on the classic-API shim in compat/.
 define fnpalm_app
@@ -64,7 +85,7 @@ $(foreach a,sbnio nionet,$(eval $(call app,$(a))))
 $(B)/sbnio.rom: $(patsubst %,$(B)/%.prc,$(APPS)) $(B)/Palm-MakeROM
 	$(B)/Palm-MakeROM -op create -hdr 0x08000000 -romBlock 0x08000000 0x10000 \
 	  -chChecksum -chName "Springboard NIO" -chManuf "FujiNet" -chVersion 0x0100 \
-	  -chZCrDate -romName "SBNIO 0.3" -autoSize -tokStr HsAT 330 \
+	  -chZCrDate -romName "SBNIO 0.4" -autoSize -tokStr HsAT 330 \
 	  $(patsubst %,-romDB $(B)/%.prc,$(APPS)) -o $@
 
 clean:
