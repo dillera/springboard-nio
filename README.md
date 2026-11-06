@@ -47,7 +47,7 @@ PIO2 machine times WE low on every CS1 write (`status`, `widths`).
 | `host/` | Mac tools: `flash.sh`, `nio.sh`, `sbcon.py` (firmware console) |
 | `rom/` | local ROM images, not tracked (mozzwald's `baseline-v3.rom` comes from his private repo) |
 | `docs/hardware/` | carrier pinout |
-| `repos/` | upstream checkouts (not tracked): mozzwald's `fujinet-nio` (`visor`), `fujinet-palm` (`visor`) and the private `handspring-visor-plan`; `fujinet-nio-lib` (`master`, its `palmos-springboard` target) |
+| `repos/` | upstream checkouts (not tracked): mozzwald's `fujinet-nio` (`visor`), `fujinet-palm` (`visor`) and the private `handspring-visor-plan`; `fujinet-nio-lib` (`master`, its `palmos-springboard` target); `fujinet-nio-master` (fujinet-nio `master`, the NIO that runs) |
 
 
 ## Building and running
@@ -66,9 +66,9 @@ host/sbcon.py status pins regs
 host/sbcon.py "send 450106004c00"   # Clock.GetTime straight to NIO, no Palm needed
 ```
 
-NIO is `repos/fujinet-nio/build/fujibus-link-serial-debug/fujinet-nio`
-(`cmake --preset fujibus-link-serial-debug`), run in `host/nio-run/`; set `NIO`
-to a binary built elsewhere. The packet-link controller has a host test:
+NIO is fujinet-nio's `master` (the packet link merged there), built with
+`cmake --preset fujibus-link-serial-debug` in `repos/fujinet-nio-master` and
+run in `host/nio-run/`; set `NIO` to a binary built elsewhere. The packet-link controller has a host test:
 
 ```sh
 cc -Ifirmware/src firmware/tests/test_packet_link.c firmware/src/packet_link.c -o /tmp/pl && /tmp/pl

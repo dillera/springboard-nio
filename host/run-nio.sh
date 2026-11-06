@@ -5,7 +5,7 @@
 set -e
 HOST=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(dirname "$HOST")
-NIO=${NIO:-$ROOT/repos/fujinet-nio/build/fujibus-link-serial-debug/fujinet-nio}
+NIO=${NIO:-$ROOT/repos/fujinet-nio-master/build/fujibus-link-serial-debug/fujinet-nio}
 PORT=${FN_SERIAL_PORT:-$(python3 "$HOST/sbcon.py" --port "NIO link")}
 mkdir -p "$HOST/nio-run"
 cd "$HOST/nio-run"
