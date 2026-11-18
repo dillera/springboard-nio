@@ -30,7 +30,7 @@ def verify(data, prc, creator=b'FNVB'):
         size = (header & 0xffffff) - 8 - ((header >> 24) & 15)
         require(size >= 0 and offset+size <= len(data), 'invalid chunk size')
         return data[offset:offset+size]
-    require(512 <= len(data) <= 65536 and len(data) % 2 == 0, 'invalid ROM size')
+    require(512 <= len(data) <= 131072 and len(data) % 2 == 0, 'invalid ROM size')
     require(u32(8) == 0xfeedbeef, 'card signature')
     require(u16(12) == 4, 'card header version')
     require(u32(256) == 0xfeedface, 'store signature')
