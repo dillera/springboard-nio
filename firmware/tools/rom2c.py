@@ -4,9 +4,9 @@ import sys
 import zlib
 
 data = open(sys.argv[1], "rb").read()
-# CS0 is only the ROM (include/sbnio.h), served by A1-A16: up to 128 KiB.
-if not 512 <= len(data) <= 0x20000 or len(data) % 2:
-    sys.exit(f"{sys.argv[1]}: {len(data)} bytes; a ROM must be 512-131072 bytes and even")
+# CS0 is only the ROM (include/sbnio.h), served by A1-A17: up to 256 KiB.
+if not 512 <= len(data) <= 0x40000 or len(data) % 2:
+    sys.exit(f"{sys.argv[1]}: {len(data)} bytes; a ROM must be 512-262144 bytes and even")
 with open(sys.argv[2], "w") as out:
     out.write("#include <stdint.h>\n")
     out.write(f"const uint32_t sbnio_rom_size = {len(data)};\n")

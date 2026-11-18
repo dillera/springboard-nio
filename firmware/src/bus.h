@@ -2,10 +2,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* CS0 serves the ROM table, indexed by A1-A16 (65536 big-endian words, a
- * 128 KiB ROM). CS1 serves the register table that follows it, indexed by
+/* CS0 serves the ROM table, indexed by A1-A17 (131072 big-endian words, a
+ * 256 KiB ROM). CS1 serves the register table that follows it, indexed by
  * A1-A15 (32768 words). */
-#define BUS_ROM_WORDS 65536u
+#define BUS_ROM_WORDS 131072u
 #define BUS_TABLE_WORDS 32768u
 extern uint16_t *const bus_rom_words;
 extern uint16_t *const bus_cs1_words;

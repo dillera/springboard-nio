@@ -17,7 +17,7 @@ sb_persistent_reply:
     ldr r3, [r2, #0]
     ldr r4, [r2, #4]
     ldr r2, [r2, #8]
-    ldr r5, =0x1f600000        /* CS0 A17-A23: beyond the 128 KiB ROM */
+    ldr r5, =0x1f400000        /* CS0 A18-A23: beyond the 256 KiB ROM */
     ldr r6, =0x2000000f
     ldr r7, =0x2000000a
     mov r12, #0
@@ -41,9 +41,9 @@ sb_persistent_reply:
     and r11, r8, r6
     cmp r11, r7
     bne .Lcs1_snapshot
-    /* springboard-nio: the ROM is 128 KiB, so A16 (FIFO bit 20) joins
-     * A1-A15 in the word index; CS0 reads above A16 still return 0xffff. */
-    ubfx r10, r8, #20, #1
+    /* springboard-nio: the ROM is 256 KiB, so A16-A17 (FIFO bits 20-21)
+     * join A1-A15 in the word index; CS0 reads above A17 return 0xffff. */
+    ubfx r10, r8, #20, #2
     ubfx r11, r9, #1, #15
     orr r11, r11, r10, lsl #15
     tst r8, r5
@@ -87,14 +87,14 @@ sb_persistent_reply:
     add r12, r12, #2          /* FFFFFFFF -> 1; 0 -> 2 */
     b .Lnext_request
 /* The selected region is derived only from the owned FIFO snapshot. CS1
- * reads the register table that follows the 128 KiB ROM table (springboard-nio;
+ * reads the register table that follows the 256 KiB ROM table (springboard-nio;
  * Experiment 2 returned a constant here). A16-A23 alias on CS1. */
 .Lcs1_snapshot:
     add r11, r11, #1
     cmp r11, r7
     bne .Linvalid_snapshot
     ubfx r11, r9, #1, #15
-    orr r11, r11, #0x10000
+    orr r11, r11, #0x20000
     ldrh r10, [r1, r11, lsl #1]
     str r10, [r3, #0x10]
     b .Lposted
