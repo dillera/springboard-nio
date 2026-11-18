@@ -26,6 +26,11 @@ static uint8_t tx[PL_HEADER + SBN_REQ_MAX + PL_CRC + 64];
 static uint32_t tx_len, tx_pos, tx_dropped;
 static struct pl_link nio;
 static bool awaiting, loopback, trace, host;
+/* One console line (and a hex dump) per request and reply: off unless asked
+ * for ("log on"), since formatting them keeps Core0 on SRAM just as the Palm
+ * reads the reply, and the request's lines delay it on its way to NIO.
+ * Replies other than ok are always logged. */
+static bool log_exchanges;
 static uint8_t seq_now;
 static uint64_t sent_at;
 static uint32_t write_tail, write_peak;
@@ -66,9 +71,10 @@ static void publish_reply(uint8_t seq, uint16_t result, const uint8_t *data, uin
     reg(SBN_R_RESP_SEQ, seq);
     awaiting = false;
     publish_status();
+    if (!log_exchanges && result == SBN_RES_OK) return;
     console_printf("#%u reply %s, %lu bytes, %lu ms\n", seq, result_name(result),
                    (unsigned long)len, (unsigned long)((time_us_64() - sent_at) / 1000));
-    if (len) console_hex("  <", data, len < 64 ? len : 64);
+    if (len && log_exchanges) console_hex("  <", data, len < 64 ? len : 64);
 }
 
 static uint32_t now_ms(void) { return to_ms_since_boot(get_absolute_time()); }
@@ -107,8 +113,10 @@ static void doorbell(uint8_t seq, uint16_t verdict) {
         awaiting = false;
         pl_cancel(&nio, now_ms());
     }
-    console_printf("#%u request %lu bytes\n", seq, (unsigned long)len);
-    if (len) console_hex("  >", req, len < 64 ? len : 64);
+    if (log_exchanges) {
+        console_printf("#%u request %lu bytes\n", seq, (unsigned long)len);
+        if (len) console_hex("  >", req, len < 64 ? len : 64);
+    }
     if (verdict != SBN_RES_OK) return publish_reply(seq, verdict, NULL, 0);
     if (loopback) return publish_reply(seq, SBN_RES_OK, req, len);
     if (!host) return publish_reply(seq, SBN_RES_NO_HOST, NULL, 0);
@@ -308,9 +316,9 @@ static void status(void) {
                    (unsigned long)req_len);
     print_widths();
     print_settle();
-    console_printf("nio port %s, link %s gen %u cap %u, %s, loopback %s\n",
+    console_printf("nio port %s, link %s gen %u cap %u, %s, loopback %s, log %s\n",
                    host ? "open" : "closed", pl_state_name(nio.state), nio.generation,
-                   nio.capacity, awaiting ? "waiting" : "idle", loopback ? "on" : "off");
+                   nio.capacity, awaiting ? "waiting" : "idle", loopback ? "on" : "off", log_exchanges ? "on" : "off");
     const struct pl_counters *c = &nio.count;
     console_printf("link syncs %lu (%lu unanswered), requests %lu answers %lu refused %lu "
                    "unanswered %lu timeouts %lu resends %lu corrupt %lu tx-dropped %lu\n",
@@ -445,11 +453,13 @@ void link_command(const char *line) {
     else if (!strcmp(line, "widths")) widths();
     else if (!strcmp(line, "trace on")) trace = true;
     else if (!strcmp(line, "trace off")) trace = false;
+    else if (!strcmp(line, "log on")) log_exchanges = true;
+    else if (!strcmp(line, "log off")) log_exchanges = false;
     else if (!strcmp(line, "loopback on")) { loopback = true; publish_status(); }
     else if (!strcmp(line, "loopback off")) { loopback = false; publish_status(); }
     else if (!strcmp(line, "stop")) bus_stop();
     else if (!strcmp(line, "arm")) bus_rearm();
     else if (!strcmp(line, "bootsel")) reset_usb_boot(0, 0);
     else console_printf("commands: status pins watch scan [ms] float regs send <hex> "
-                        "trace on|off loopback on|off settle [0-31] widths stop arm bootsel\n");
+                        "trace on|off log on|off loopback on|off settle [0-31] widths stop arm bootsel\n");
 }

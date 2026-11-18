@@ -3,6 +3,7 @@
 # restart fujinet-nio on the new USB port.
 #   host/flash.sh             # firmware with the current ROM
 #   host/flash.sh --palm      # rebuild the Palm app and ROM first
+#   SBNIO_ROM=other.rom host/flash.sh   # serve another ROM image on CS0
 set -e
 HOST=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(dirname "$HOST")
@@ -11,7 +12,7 @@ if [ "$1" = "--palm" ]; then
     "$ROOT/palm/build.sh"
 fi
 cmake -S "$ROOT/firmware" -B "$ROOT/firmware/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
-    -DSBNIO_ROM="$ROOT/palm/build/sbnio.rom" >/dev/null
+    -DSBNIO_ROM="${SBNIO_ROM:-$ROOT/palm/build/sbnio.rom}" >/dev/null
 cmake --build "$ROOT/firmware/build"
 # Flash only the Springboard board, by serial, even with other RP2350s attached.
 SERIAL=${SBNIO_SERIAL:-$(cat "$HOST/board.serial" 2>/dev/null)}

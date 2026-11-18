@@ -9,6 +9,7 @@
 #include <apio.h>
 #include "hardware/clocks.h"
 #include "hardware/dma.h"
+#include "hardware/structs/busctrl.h"
 #include "hardware/gpio.h"
 #include "hardware/pio.h"
 #include "hardware/structs/sio.h"
@@ -16,9 +17,9 @@
 #include "pico/multicore.h"
 
 /* The 8-byte offset keeps the proven table's modulo-16 SRAM bank alignment. */
-static uint8_t table_backing[4 * BUS_TABLE_WORDS + 16] __attribute__((aligned(16)));
+static uint8_t table_backing[2 * (BUS_ROM_WORDS + BUS_TABLE_WORDS) + 16] __attribute__((aligned(16)));
 uint16_t *const bus_rom_words = (uint16_t *)(table_backing + 8);
-uint16_t *const bus_cs1_words = (uint16_t *)(table_backing + 8) + BUS_TABLE_WORDS;
+uint16_t *const bus_cs1_words = (uint16_t *)(table_backing + 8) + BUS_ROM_WORDS;
 
 volatile uint32_t bus_write_ring[BUS_WRITE_RING_WORDS]
     __attribute__((aligned(BUS_WRITE_RING_WORDS * 4)));
@@ -113,7 +114,7 @@ static void core1_service(void) {
 }
 
 void bus_load_rom(const uint8_t *rom, uint32_t size) {
-    for (uint32_t i = 0; i < BUS_TABLE_WORDS; ++i) {
+    for (uint32_t i = 0; i < BUS_ROM_WORDS; ++i) {
         uint32_t a = 2 * i;
         uint16_t hi = a < size ? rom[a] : 0xff, lo = a + 1 < size ? rom[a + 1] : 0xff;
         bus_rom_words[i] = (uint16_t)(hi << 8 | lo);
@@ -229,6 +230,11 @@ uint32_t bus_write_head(void) {
 
 void bus_launch_core1(void) {
     clamp();
+    /* Core1 answers every Palm read from SRAM within one bus cycle; let it
+     * win SRAM arbitration over Core0 and DMA, whose traffic (console
+     * formatting, USB, the write ring) could otherwise hold its table loads
+     * long enough for the Palm to sample a wrong word. */
+    busctrl_hw->priority = BUSCTRL_BUS_PRIORITY_PROC1_BITS;
     multicore_launch_core1(core1_service);
 }
 

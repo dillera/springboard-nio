@@ -11,7 +11,7 @@ Prism (Palm OS 3.5)  --Springboard CS0/CS1-->  RP2350  --USB serial, packet link
 
 The two chip selects (`include/sbnio.h`, ABI 4):
 
-- **CS0** is the Springboard ROM image (up to 64 KB), served from SRAM. It holds
+- **CS0** is the Springboard ROM image (up to 256 KB, A1-A17), served from SRAM. It holds
   the apps, so the Prism lists them as soon as it recognises the module.
 - **CS1** (CsBase + CsSize, 0x29000000 on the Prism) is the link, with plain
   MOVE.W cycles both ways:

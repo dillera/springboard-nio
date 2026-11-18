@@ -30,12 +30,14 @@ def verify(data, prc, creator=b'FNVB'):
         size = (header & 0xffffff) - 8 - ((header >> 24) & 15)
         require(size >= 0 and offset+size <= len(data), 'invalid chunk size')
         return data[offset:offset+size]
-    require(512 <= len(data) <= 65536 and len(data) % 2 == 0, 'invalid ROM size')
+    require(512 <= len(data) <= 262144 and len(data) % 2 == 0, 'invalid ROM size')
     require(u32(8) == 0xfeedbeef, 'card signature')
     require(u16(12) == 4, 'card header version')
     require(u32(256) == 0xfeedface, 'store signature')
     count = u32(108)
-    require(count == len(data), 'checksum must cover entire ROM')
+    # The Visor counts checksum bytes in 16 bits; over 64 KB, check 0xFFFE.
+    require(count == (len(data) if len(data) <= 0xFFFF else 0xFFFE),
+            'checksum must cover the ROM, or 0xFFFE bytes of one over 64 KB')
     crc = binascii.crc_hqx(data[:112], 0)
     crc = binascii.crc_hqx(data[114:count], crc)
     require(crc == u16(112), 'card CRC16 mismatch')
